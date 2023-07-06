@@ -224,14 +224,54 @@ struct TransposeDimsAndParams {
 // Expected output: [R1]
 std::vector<HloInstruction*> GetFusionRoots(HloComputation* computation);
 
-// Returns whether the computation has at least one root triggering unnested
-// reduction emitter.
-bool HasAnyUnnestedReductionRoot(HloComputation* computation);
+struct FusionHero {
+  // Preference in returning.
+  enum FusionType {
+    kScatter = -1,
+    kReduction = 0,
+    kTranspose = 1,
+    kLoop = 2
+  };
 
-const HloInstruction& FindNonTrivialHero(const HloInstruction& instr);
+  const HloInstruction* hlo = nullptr;
+  FusionType type = kLoop;
 
-// Whether there is a fusion root triggering transposition emitter.
-bool HasAnyTiledTransposeRoot(HloComputation* computation);
+  std::string ToString() {
+    std::string s;
+    absl::StrAppend(&s, hlo->ToString());
+    absl::StrAppend(&s, "; ");
+    std::string t = [&] {
+      switch (type) {
+        case kReduction:
+          return "(reduction)";
+        case kTranspose:
+          return "(transpose)";
+        case kLoop:
+          return "(loop)";
+        case kScatter:
+          return "(scatter)";
+      }
+    }();
+    absl::StrAppend(&s, t);
+    return s;
+  }
+};
+
+// Finds real hero for the fusion.
+//
+// Invariant: walk up the graph, etc etc.
+// TODO(cheshire): Write up definition.
+//
+// For instruction: find the real hero.
+//
+// For fusion: find the real hero of fusion root.
+//
+// For MOF: iterate through outputs, find "main" one.
+//
+// In case of multiple heros possible, always returns one with smallest fusion
+// type.
+FusionHero FindRealHero(const HloInstruction& hlo);
+FusionHero FindRealHero(const HloComputation& cmp);
 
 struct TransposeDescription {
   Vector3 dimensions;
@@ -264,6 +304,9 @@ std::optional<TransposeDescription> FindAnyTiledTranspose(
     const HloInstruction& instr);
 
 bool IsIntermediate(const HloInstruction* instr, int allowed_operand_count = 1);
+
+bool IsTransposeIntermediate(const HloInstruction* instr);
+bool IsReduceIntermediate(const HloInstruction* instr);
 
 // Log and verify an LLVM module.
 void LogAndVerify(const llvm::Module* m);
