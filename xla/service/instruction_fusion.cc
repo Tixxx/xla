@@ -551,7 +551,6 @@ StatusOr<bool> InstructionFusion::Run(
       if (instruction == nullptr) {
         break;
       }
-
       if (!instruction->IsFusible() &&
           instruction->opcode() != HloOpcode::kFusion) {
         continue;
@@ -641,7 +640,6 @@ StatusOr<bool> InstructionFusion::Run(
             VLOG(2) << "Not fusing " << operand->ToShortString() << "| into |"
                     << instruction->ToShortString() << "| as "
                     << should_fuse.Explain();
-
             // Readability optimizations: lack of fusion for tuple accesses
             // generates a lot of noise.
             if (operand->opcode() != HloOpcode::kGetTupleElement &&

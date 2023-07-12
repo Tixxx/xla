@@ -100,6 +100,7 @@ FusionDecision GpuInstructionFusion::ShouldFuseInexpensiveChecks(
 
 FusionDecision GpuInstructionFusion::ShouldFuse(HloInstruction* consumer,
                                                 int64_t operand_index) {
+
   if (auto fusible = ShouldFuseInexpensiveChecks(consumer, operand_index);
       !fusible) {
     return fusible;

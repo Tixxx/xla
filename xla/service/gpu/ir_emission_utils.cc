@@ -904,17 +904,15 @@ std::optional<TransposeDescription> FindTiledLogicalTranspose(
 std::optional<TransposeDescription> FindAnyTiledTranspose(
     const HloInstruction& instr) {
   const HloInstruction& hero = FindNonTrivialHero(instr);
-  // TODO(b/284431534): Figure out how to make the shared memory transpose
-  // emitter faster for this case.
   if (hero.shape().element_type() == F32 &&
       instr.shape().element_type() == S8) {
     return std::nullopt;
   }
 
-  if (auto d1 = FindTiledTranspose(hero)) {
+  if (auto d1 = FindTiledTranspose(instr)) {
     return d1;
   }
-  if (auto d2 = FindTiledLogicalTranspose(hero)) {
+  if (auto d2 = FindTiledLogicalTranspose(instr)) {
     return d2;
   }
   return std::nullopt;
@@ -935,6 +933,129 @@ bool IsIntermediate(const HloInstruction* instr, int allowed_operand_count) {
        (instr->opcode() == HloOpcode::kTranspose &&
         ShapeUtil::TransposeIsBitcast(instr->operand(0)->shape(),
                                       instr->shape(), instr->dimensions()))));
+}
+
+bool IsTransposeIntermediate(const HloInstruction* instr) {
+  return (
+      instr->operand_count() <= 1 && instr->user_count() <= 1 &&
+      ((instr->IsElementwise() && instr->opcode() != HloOpcode::kCopy) ||
+       instr->opcode() == HloOpcode::kBitcast ||
+       (instr->opcode() == HloOpcode::kReshape &&
+        ShapeUtil::ReshapeIsBitcast(instr->operand(0)->shape(),
+                                    instr->shape())) ||
+       (instr->opcode() == HloOpcode::kTranspose &&
+        ShapeUtil::TransposeIsBitcast(instr->operand(0)->shape(),
+                                      instr->shape(), instr->dimensions()))));
+}
+
+bool IsReduceIntermediate(const HloInstruction* instr) {
+  // TODO(cheshire): Do not duplicate logic with the function above.
+  if (instr->operand_count() > 1 || instr->user_count() > 1) {
+    return false;
+  }
+
+  // Monotone functions are fine, and pure data movement is fine.
+  // The reason we want monotone, is that reduction with kMin and kMax can still
+  // use atomics.
+  switch (instr->opcode()) {
+    case HloOpcode::kAtan2:
+    case HloOpcode::kBitcast:
+    case HloOpcode::kBitcastConvert:
+    case HloOpcode::kExp:
+    case HloOpcode::kFloor:
+    case HloOpcode::kLog:
+    case HloOpcode::kConvert:
+    case HloOpcode::kLog1p:
+    case HloOpcode::kSqrt:
+    case HloOpcode::kRsqrt:
+    case HloOpcode::kTanh:
+    case HloOpcode::kReshape: // TODO(cheshire): only when it is a bitcast?
+    //case HloOpcode::kTranspose: TODO(cheshire): probably more support is
+    // required? Also: kCopy
+      return true;
+      // TODO(cheshire): Also support other bitcasts?
+      //return ShapeUtil::ReshapeIsBitcast(instr->operand(0)->shape(),
+                                         //instr->shape());
+    default:
+      return false;
+  }
+}
+
+// TODO(cheshire): Avoid duplication.
+static const HloInstruction* FindNonTrivialReductionHero(
+    const HloInstruction& instr) {
+  const HloInstruction* idx = &instr;
+  while (IsReduceIntermediate(idx) && idx->operand_count() == 1) {
+    idx = idx->operand(0);
+  }
+  if (IsReductionFromOrToContiguousDimensions(*idx)) {
+    return idx;
+  }
+  return nullptr;
+}
+
+static const HloInstruction* FindNonTrivialTransposeHero(
+    const HloInstruction& instr) {
+  const HloInstruction* idx = &instr;
+
+  // Go up the chain of trivial elementwise(+bitcast, -copy) operations. Such
+  // chains are bound to be quite small, as we restrict the number of users as
+  // well. Note that no memoization is needed due to user number constraints: we
+  // never have to revisit same nodes.
+  while (IsTransposeIntermediate(idx) && idx->operand_count() == 1) {
+    idx = idx->operand(0);
+  }
+  if (FindAnyTiledTranspose(*idx)) {
+    return idx;
+  }
+  return nullptr;
+}
+
+FusionHero FindRealHero(const HloComputation& cmp) {
+  // TODO(cheshire): Refactor the code to avoid this hack, currently this is OK
+  // as instructions are never modified.
+  std::vector<HloInstruction*> roots = GetFusionRoots(
+      &const_cast<HloComputation&>(cmp));
+  CHECK(!roots.empty());
+  FusionHero found;
+  for (const HloInstruction* r : roots) {
+    FusionHero h = FindRealHero(*r);
+    if (found.hlo == nullptr ||
+        static_cast<int>(h.type) < static_cast<int>(found.type)) {
+      found = h;
+    }
+  }
+  CHECK(found.hlo);
+  return found;
+}
+
+// TODO(cheshire): Add cache.
+FusionHero FindRealHero(const HloInstruction& hlo) {
+  if (hlo.opcode() == HloOpcode::kFusion) {
+    return FindRealHero(*hlo.fused_instructions_computation());
+  }
+
+  if (hlo.opcode() == HloOpcode::kScatter) {
+    return {&hlo, FusionHero::kScatter};
+  }
+
+  if (const HloInstruction* rh = FindNonTrivialReductionHero(hlo)) {
+    // No output fusions in case we have multiple users.
+    // No output fusions for reductions requiring atomics.
+    if (rh == &hlo ||
+        (rh->user_count() == 1 &&
+         ReductionIsRaceFree(hlo.GetModule()->config(), GetReductionKindAndContiguousComponents(*rh)))) {
+      return {rh, FusionHero::kReduction};
+    }
+  }
+
+  if (const HloInstruction* th = FindNonTrivialTransposeHero(hlo)) {
+    if (th == &hlo || th->user_count() == 1) {
+      // No output fusions in case we need multiple users.
+      return {th, FusionHero::kTranspose};
+    }
+  }
+  return {&hlo, FusionHero::kLoop};
 }
 
 const HloInstruction& FindNonTrivialHero(const HloInstruction& instr) {
