@@ -469,7 +469,8 @@ class IrEmitterUnnested : public IrEmitter {
   // instructions. In other words, a block_id_y is assigned to a group and so
   // different groups can be run in parallel.
   Status EmitUnnestedReduction(mlir::lmhlo::FusionOp fusion,
-                               HloComputation* fused_computation);
+                               HloComputation* fused_computation,
+                               const FusionHero& hero);
 
   // Emits a kernel for the given hlo instruction using a tiled 0-2-1 transpose
   // algorithm to improve the memory access patterns for the input parameters
@@ -492,11 +493,9 @@ class IrEmitterUnnested : public IrEmitter {
   //
   // `kTileSize` should usually be same as warp size. We currently choose 32 for
   // `kTileSize` and 4 for `kNumRows`. The CUDA algorithm uses 8 for `kNumRows`.
-  //
-  // TODO(b/33320379): Here each block transposes 1 tile. It may be more
-  // efficient to launch fewer blocks so each transposes many tiles.
   Status EmitUnnestedTranspose(mlir::lmhlo::FusionOp fusion,
-                               HloComputation* fused_computation);
+                               HloComputation* fused_computation,
+                               const FusionHero& hero);
 
   // Computes the KernelMappingScheme for the reduce HLO and indicates whether
   // the reduction is a row reduction. For an un-fused reduce op, unnested_hlo
@@ -505,7 +504,7 @@ class IrEmitterUnnested : public IrEmitter {
   // reduce op.
   StatusOr<ReductionCodegenInfo> ComputeReductionCodegenInfo(
       mlir::lmhlo::FusionOp fusion, HloComputation* fused_computation,
-      HloInstruction* first_reduce,
+      const HloInstruction* first_reduce,
       const std::vector<std::vector<HloInstruction*>>& instr_index_groups);
 
   // Generates code for input-fusible slices.
@@ -563,7 +562,8 @@ class IrEmitterUnnested : public IrEmitter {
                            absl::Span<const llvm_ir::IrArray> operand_arrays,
                            absl::Span<const llvm_ir::IrArray> output_arrays,
                            const TilingScheme& tiling_scheme,
-                           const LaunchDimensions& launch_dimensions);
+                           const LaunchDimensions& launch_dimensions,
+                              const FusionHero& hero);
 
   Status EmitScatter(mlir::lmhlo::FusionOp fusion_op,
                      const HloComputation* fused_computation);
@@ -635,12 +635,13 @@ class IrEmitterUnnested : public IrEmitter {
       const TilingKernelInfo& tiling_kernel_info);
 
   // Returns the address to write the reduction output to.
-  llvm::Value* GetOutputAddressForReduction(
+  llvm_ir::IrArray::Index GetOutputAddressForReduction(
       int partial_result_idx, llvm::Type* index_ty,
       const ReductionCodegenState& reduction_codegen_state,
       const TilingKernelInfo& tiling_kernel_info,
       const ReductionOutputMap& output_arrays,
-      const HloReduceInstruction* reduction, int output_idx);
+      const HloReduceInstruction* reduction, const HloInstruction* root,
+      int output_idx);
 
   // Performs the actual write of the reduction result.
   using TypedPointer = std::pair<llvm::Value* const, llvm::Type* const>;
@@ -649,8 +650,8 @@ class IrEmitterUnnested : public IrEmitter {
       const ReductionCodegenState& reduction_codegen_state,
       const TilingKernelInfo& tiling_kernel_info,
       const ReductionOutputMap& output_arrays,
-      const HloReduceInstruction* reduction, int partial_result_idx,
-      const absl::Span<TypedPointer const> values);
+      const HloReduceInstruction* reduction, const HloInstruction* root,
+      int partial_result_idx, const absl::Span<TypedPointer const> values);
 
   // `current_output`: the value the tile has calculated.
   // `output_address`: address where the output value has to be written.
@@ -658,14 +659,16 @@ class IrEmitterUnnested : public IrEmitter {
       const TilingKernelInfo& tiling_kernel_info,
       const ReductionCodegenState& reduction_codegen_state,
       llvm::Type* index_ty, const ReductionOutputMap& output_arrays,
-      const HloReduceInstruction* reduction, int partial_result_idx);
+      const HloReduceInstruction* reduction, const HloInstruction* root,
+      int partial_result_idx);
 
   // Same arguments as EmitReductionOutputForRowReduction.
   void EmitReductionOutputForColumnReduction(
       const TilingKernelInfo& tiling_kernel_info,
       const ReductionCodegenState& reduction_codegen_state,
       llvm::Type* index_ty, const ReductionOutputMap& output_arrays,
-      const HloReduceInstruction* reduction, int partial_result_idx);
+      const HloReduceInstruction* reduction, const HloInstruction* root,
+      int partial_result_idx);
 
   // Emits code for reductions in the output_instructions.
   Status EmitIRForReduction(mlir::lmhlo::FusionOp fusion,

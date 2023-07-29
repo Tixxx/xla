@@ -103,11 +103,6 @@ FusionDecision FusionFitsInBudget(const HloInstruction& instr1,
 bool CreatesHeavyComputation(const HloInstruction& producer,
                              const HloInstruction& consumer);
 
-// Returns the instruction that determines the emitter used for lowering,
-// sometimes referred to as "the real hero".
-const HloInstruction* GetRealHeroForMultiOutputFusion(
-    const HloInstruction& instr);
-
 // Whether 'hero1' and 'hero2' are compatible if the two fusions containing
 // 'hero1' and 'hero2' are merged together. For example merging two fusions with
 // a reduction hero and a transpose here, respectively, does not work.
@@ -123,6 +118,11 @@ FusionDecision FusionHeroesAreCompatible(const HloInstruction* hero1,
 // themselves are fusible!
 FusionDecision ShapesCompatibleForMultiOutputFusion(
     const HloInstruction& instr1, const HloInstruction& instr2);
+
+// Returns the instruction that determines the emitter used for lowering,
+// sometimes referred to as "the real hero".
+const HloInstruction* GetRealHeroForMultiOutputFusion(
+    const HloInstruction& instr);
 
 // Whether the instructions are compatible for producer-consumer fusion
 // i.e. whether the producer and consumer are loop/input fusible and

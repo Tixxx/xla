@@ -16,6 +16,7 @@ limitations under the License.
 #include "xla/service/gpu/horizontal_input_fusion.h"
 
 #include <algorithm>
+#include <vector>
 
 #include "absl/container/flat_hash_set.h"
 #include "absl/types/span.h"
@@ -30,7 +31,7 @@ namespace {
 // Gets the representative input shape of the multi-output fusion.
 Shape GetInputShapeForMultiOutputFusion(const HloInstruction& instr) {
   // Get the HLO that determines the emitter used for lowering.
-  const HloInstruction* real_hero = GetRealHeroForMultiOutputFusion(instr);
+  const HloInstruction* real_hero = FindRealHero(instr).hlo;
   if (real_hero->operands().empty()) {
     // Simply return an empty shape if the representative node has no input
     // operands.
