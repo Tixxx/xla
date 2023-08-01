@@ -2075,7 +2075,11 @@ Status IrEmitterUnnested::EmitFusion(mlir::Operation* op) {
       LOG(FATAL) << "Unsupported fusion kind: " << backend_config.kind();
     }
     case HloFusionAnalysis::EmitterFusionKind::kReduction:
-      return EmitUnnestedReduction(fusion_op, fusion_analysis);
+    {
+      FusionHero fh = FindRealHero(*fused_computation);
+      LOG(ERROR) << "######EMITTING FH " << fh.hlo->ToString();
+      return EmitUnnestedReduction(fusion_op, fusion_analysis, fh);
+    }
     case HloFusionAnalysis::EmitterFusionKind::kTranspose:
       return EmitUnnestedTranspose(fusion_op, fusion_analysis);
     case HloFusionAnalysis::EmitterFusionKind::kInputSlices:
@@ -4929,12 +4933,14 @@ Status IrEmitterUnnested::EmitIRForReduction(
 }
 
 Status IrEmitterUnnested::EmitUnnestedReduction(
-    mlir::lmhlo::FusionOp fusion, HloFusionAnalysis& fusion_analysis) {
+    mlir::lmhlo::FusionOp fusion, HloFusionAnalysis& fusion_analysis, const FusionHero& hero) {
+  HloComputation* fused_computation = const_cast<HloComputation*>(fusion_analysis.fused_computation());
+
   TF_ASSIGN_OR_RETURN(auto reduction_codegen_info,
                       fusion_analysis.GetReductionCodegenInfo());
   TF_ASSIGN_OR_RETURN(auto launch_dimensions,
                       fusion_analysis.GetLaunchDimensions());
-
+  auto hlo_roots = GetFusionRoots(fused_computation);
   VLOG(3) << "Launch dimensions of "
           << mlir::mhlo::GetDebugNameFromLocation(fusion.getLoc()) << ": "
           << launch_dimensions.ToString();
@@ -4942,11 +4948,15 @@ Status IrEmitterUnnested::EmitUnnestedReduction(
     absl::Span<HloInstruction* const> fusion_roots =
         fusion_analysis.fusion_roots();
     for (int i = 0; i < fusion_roots.size(); ++i) {
-      if (IsReductionFromOrToContiguousDimensions(*fusion_roots[i])) {
+      LOG(ERROR) << "######EmitUnnestedReduction fusion_roots[i] " << fusion_roots[i]->ToString();
+      //if (IsReductionFromOrToContiguousDimensions(*fusion_roots[i])) {
+      FusionHero fh = FindRealHero(*hlo_roots[i]);
+      if (fh.type == FusionHero::kReduction) {
         TF_RETURN_IF_ERROR(BuildFusedInitializerThunk(fusion, i));
       }
     }
   }
+      LOG(ERROR) << "######EmitUnnestedReduction BuildKernelThunkForFusion ";
 
   TF_ASSIGN_OR_RETURN(
       std::optional<std::vector<llvm_ir::IrArray>> opt_ir_arrays,
@@ -4958,7 +4968,6 @@ Status IrEmitterUnnested::EmitUnnestedReduction(
   std::vector<llvm_ir::IrArray>& ir_arrays = opt_ir_arrays.value();
 
   FusedIrEmitter fused_emitter(elemental_emitter_);
-  const HloComputation* fused_computation = fusion_analysis.fused_computation();
   CHECK_LT(fused_computation->num_parameters(), ir_arrays.size());
   for (int i = 0; i < fused_computation->num_parameters(); i++) {
     llvm_ir::IrArray ir_array = ir_arrays[i];
@@ -4977,6 +4986,7 @@ Status IrEmitterUnnested::EmitUnnestedReduction(
   // Skip all parameter buffers first.
   int ir_arrays_idx = fused_computation->num_parameters();
   for (HloInstruction* root : fusion_analysis.fusion_roots()) {
+    LOG(ERROR) << "#######IR INDEX FOR ROOT " << root->ToString();
     int get_num_results = GetNumOutputs(root->shape());
     result_ir_arrays[root] =
         absl::MakeSpan(ir_arrays).subspan(ir_arrays_idx, get_num_results);
@@ -5005,6 +5015,7 @@ Status IrEmitterUnnested::EmitUnnestedReduction(
               fusion, instr_index_groups[i], fused_emitter, result_ir_arrays,
               *reduction_codegen_info, reduce_operand_shape);
         }));
+    LOG(ERROR) << "######EMITTED IR FOR REDUCTION";
   }
 
   return OkStatus();

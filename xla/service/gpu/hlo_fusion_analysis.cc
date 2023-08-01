@@ -270,9 +270,16 @@ HloFusionAnalysis::GetEmitterFusionKind() const {
 #endif
 
   HloComputation* fused_computation = fusion_->fused_instructions_computation();
-  if (HasAnyUnnestedReductionRoot(fused_computation)) {
+  // if (HasAnyUnnestedReductionRoot(fused_computation)) {
+  //   return EmitterFusionKind::kReduction;
+  // }
+  FusionHero fh = FindRealHero(*fused_computation);
+
+  if (fh.type == FusionHero::kReduction) {
+    LOG(ERROR) << "######hlo fusion analysis GetEmitterFusionKind EMITTING FH " << fh.hlo->ToString();
     return EmitterFusionKind::kReduction;
   }
+
   if (HasConsistentTransposeHeros(fused_computation)) {
     return EmitterFusionKind::kTranspose;
   }
@@ -335,12 +342,14 @@ HloFusionAnalysis::GetReductionCodegenInfo() {
   if (reduction_codegen_info_.has_value()) {
     return &reduction_codegen_info_.value();
   }
+  FusionHero fh = FindRealHero(*fused_computation_);
+  LOG(ERROR) << "######first_reduce " << fh.hlo->ToString();
 
-  HloInstruction* first_reduce =
-      *absl::c_find_if(fusion_roots_, [](HloInstruction* instr) {
-        return IsReductionFromOrToContiguousDimensions(*instr);
-      });
-
+  // HloInstruction* first_reduce =
+  //     *absl::c_find_if(fusion_roots_, [](HloInstruction* instr) {
+  //       return IsReductionFromOrToContiguousDimensions(*instr);
+  //     });
+  HloInstruction* first_reduce = const_cast<HloInstruction*>(fh.hlo);
   // We always use the first reduce as representative to construct
   // ReductionCodegenInfo, since all the reductions are required to have the
   // same shape and layout as verified by `IsFusedReductionOutputConsistent()`.
