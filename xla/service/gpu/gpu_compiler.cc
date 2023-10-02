@@ -664,6 +664,8 @@ Status GpuCompiler::OptimizeHloModule(HloModule* hlo_module,
       collectives_pipeline.AddPass<CollectivePipeliner>(config);
     }
 
+    collectives_pipeline.AddPass<HloDCE>();
+
     // Run algebraic simplifier to reshape(broadcast) into a broadcast when
     // the reshape is just adding a unit dimension. This will help with the
     // AllGatherBroadcastReorder pass.

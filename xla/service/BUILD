@@ -502,6 +502,7 @@ cc_library(
         ":constant_value",
         ":hlo_pass",
         ":value_range",
+        ":algebraic_simplifier",
         "//xla:comparison_util",
         "//xla:literal_util",
         "//xla:shape_util",
@@ -530,6 +531,8 @@ xla_cc_test(
     deps = [
         ":collective_pipeliner",
         ":hlo_parser",
+        ":hlo_dce",
+        ":algebraic_simplifier",
         ":hlo_pass_pipeline",
         "//xla:statusor",
         "//xla:util",
