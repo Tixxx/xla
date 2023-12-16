@@ -411,18 +411,6 @@ absl::Status NcclCollectiveThunk::AsyncExecutor::Execute(
   return absl::OkStatus();
 }
 
-absl::Status NcclCollectiveThunk::AsyncExecutor::Await(
-    const ExecuteParams& params) {
-  int device_ordinal = params.stream->parent()->device_ordinal();
-  auto done_event = [this, device_ordinal] {
-    absl::MutexLock lock(&mu_);
-    return done_events_.extract(device_ordinal);
-  }();
-  TF_RET_CHECK(done_event) << "done event not found";
-  params.stream->ThenWaitFor(&done_event.mapped());
-  return absl::OkStatus();
-}
-
 NcclCollectiveDoneThunk::NcclCollectiveDoneThunk(
     Thunk::Kind kind, ThunkInfo thunk_info,
     NcclCollectiveThunk::AsyncExecutor& async)

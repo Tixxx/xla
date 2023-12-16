@@ -126,7 +126,7 @@ class NcclCollectiveThunk : public Thunk {
     mlir::Value destination_value;
   };
 
-  class AsyncExecutor {
+  class AsyncExecutor : public AsyncExecutorBase {
    public:
     // Executes the function on the async communications stream and records a
     // completion event.
@@ -136,13 +136,6 @@ class NcclCollectiveThunk : public Thunk {
             fn,
         const ExecuteParams& params, NcclApi::NcclCommHandle comm,
         AsyncStreamKind stream_kind);
-    // Blocks the compute stream until async communication is complete.
-    absl::Status Await(const ExecuteParams& params);
-
-   private:
-    absl::Mutex mu_;
-    // Store done events (by device ordinal) for the done thunk to wait on.
-    absl::flat_hash_map<int, se::Event> done_events_ ABSL_GUARDED_BY(mu_);
   };
 
   // Logging support.

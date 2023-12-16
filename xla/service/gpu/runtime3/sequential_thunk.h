@@ -44,6 +44,7 @@ class SequentialThunk : public Thunk {
  private:
   // The list of sub-thunks.
   ThunkSequence thunks_;
+  std::unique_ptr<AsyncExecutorBase> async_;
 };
 
 }  // namespace gpu
