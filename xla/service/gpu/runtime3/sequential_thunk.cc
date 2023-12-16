@@ -25,7 +25,16 @@ namespace gpu {
 using ::tsl::profiler::ScopedAnnotation;
 
 SequentialThunk::SequentialThunk(ThunkInfo thunk_info, ThunkSequence thunks)
-    : Thunk(Kind::kSequential, thunk_info), thunks_(std::move(thunks)) {}
+    : Thunk(Kind::kSequential, thunk_info), thunks_(std::move(thunks)) {
+  for (auto& thunk : thunks_) {
+    // If any thunk runs on a different compute stream,
+    // initialize async executor here.
+    if (thunk->execution_stream_id() != kMainComputeStreamId) {
+      async_ = std::make_unique<AsyncExecutorBase>();
+      break;
+    }
+  }
+}
 
 std::string SequentialThunk::ToStringExtra(int indent) const {
   std::string result = "\n";
@@ -43,7 +52,25 @@ absl::Status SequentialThunk::Initialize(const InitializeParams& params) {
 absl::Status SequentialThunk::ExecuteOnStream(const ExecuteParams& params) {
   for (const auto& thunk : thunks_) {
     ScopedAnnotation annotation([&] { return thunk->profile_annotation(); });
-    TF_RETURN_IF_ERROR(thunk->ExecuteOnStream(params));
+    if (thunk->wait_on_streams().size() > 0) {
+      VLOG(2) << "SequentialThunk waiting for source streams.";
+      TF_RETURN_IF_ERROR(async_->Await(params));
+    }
+    int64_t stream_id = thunk->execution_stream_id();
+    VLOG(2) << "SequentialThunk Running thunk on stream: " << stream_id;
+    // Run on the target compute stream
+    if (stream_id != kMainComputeStreamId) {
+      absl::Status status = [&]() {
+        return async_->Execute(
+            [&](const ExecuteParams& params) {
+              return thunk->ExecuteOnStream(params);
+            },
+            params, stream_id);
+      }();
+      TF_RETURN_IF_ERROR(status);
+    } else {
+      TF_RETURN_IF_ERROR(thunk->ExecuteOnStream(params));
+    }
   }
   return absl::OkStatus();
 }

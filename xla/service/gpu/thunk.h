@@ -72,6 +72,8 @@ namespace gpu {
 // different threads and coordinate resource acquisition via rendezvous.
 class Thunk {
  public:
+  static constexpr int64_t kMainComputeStreamId = 0;
+
   enum Kind {
     kCholesky,
     kConditional,
@@ -136,6 +138,9 @@ class Thunk {
     static ThunkInfo WithProfileAnnotation(const HloInstruction* instr);
 
     std::string profile_annotation;
+    int64_t execution_stream_id = kMainComputeStreamId;
+    std::vector<int64_t> wait_on_streams;
+
     // TODO(b/304613751): This is only needed by the LMHLO. Remove this when
     // LMHLO is removed from the runtime pipeline.
     mlir::Operation* op;
@@ -205,12 +210,18 @@ class Thunk {
         const ServiceExecutableRunOptions& run_options,
         const BufferAllocations& buffer_allocations, se::Stream* stream,
         se::Stream* command_buffer_trace_stream,
-        absl::Span<se::Stream* const> async_streams = {});
+        absl::Span<se::Stream* const> async_streams = {},
+        absl::flat_hash_map<int64_t, se::Stream*> additional_compute_streams =
+            {});
 
     const BufferAllocations* buffer_allocations;  // never null
 
     // Main compute stream on which thunks launch operations.
     se::Stream* stream;
+
+    // Additional compute streams on which thunks launch operations.
+    // Indexed by operation_queue_id.
+    absl::flat_hash_map<int64_t, se::Stream*> additional_compute_streams;
 
     // Auxiliary stream for tracing command buffers. We use a separate stream to
     // avoid accidental tracing of unrelated activities on a main stream.
@@ -239,7 +250,25 @@ class Thunk {
                   se::Stream* device_to_host_stream,
                   se::Stream* host_to_device_stream,
                   SendDeviceMemoryFunction* send_device_memory_function,
-                  RecvDeviceMemoryFunction* recv_device_memory_function);
+                  RecvDeviceMemoryFunction* recv_device_memory_function,
+                  absl::flat_hash_map<int64_t, se::Stream*>
+                      additional_compute_streams = {});
+  };
+
+  class AsyncExecutorBase {
+   public:
+    // Executes the function on the async stream and records a
+    // completion event.
+    absl::Status Execute(absl::FunctionRef<Status(const ExecuteParams&)> fn,
+                         const ExecuteParams& params,
+                         int64_t execution_stream_id);
+    // Blocks the compute stream until async communication is complete.
+    absl::Status Await(const ExecuteParams& params);
+
+   protected:
+    absl::Mutex mu_;
+    // Store done events (by device ordinal) for the done thunk to wait on.
+    absl::flat_hash_map<int, se::Event> done_events_ ABSL_GUARDED_BY(mu_);
   };
 
   //===--------------------------------------------------------------------===//
@@ -290,7 +319,9 @@ class Thunk {
   Thunk(Kind kind, ThunkInfo thunk_info)
       : kind_(kind),
         profile_annotation_(thunk_info.profile_annotation),
-        op_(thunk_info.op) {}
+        op_(thunk_info.op),
+        execution_stream_id_(thunk_info.execution_stream_id),
+        wait_on_streams_(thunk_info.wait_on_streams) {}
   virtual ~Thunk() = default;
   Thunk(const Thunk&) = delete;
   Thunk& operator=(const Thunk&) = delete;
@@ -336,10 +367,18 @@ class Thunk {
 
   static absl::string_view KindToString(Thunk::Kind kind);
 
+  int64_t execution_stream_id() const { return execution_stream_id_; }
+  const std::vector<int64_t>& wait_on_streams() const {
+    return wait_on_streams_;
+  }
+  virtual se::Stream* GetStreamForExecution(const ExecuteParams& params);
+
  private:
   Kind kind_;
   std::string profile_annotation_;
   mlir::Operation* op_;
+  int64_t execution_stream_id_;
+  std::vector<int64_t> wait_on_streams_;
 };
 
 // A sequence of thunks.

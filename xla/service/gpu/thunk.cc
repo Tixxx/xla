@@ -33,6 +33,7 @@ limitations under the License.
 #include "xla/executable_run_options.h"
 #include "xla/hlo/ir/hlo_instruction.h"
 #include "xla/service/global_device_id.h"
+#include "xla/service/gpu/backend_configs.pb.h"
 #include "xla/service/gpu/buffer_allocations.h"
 #include "xla/service/gpu/gpu_executable_run_options.h"
 #include "xla/service/gpu/nccl_clique_key.h"
@@ -103,6 +104,42 @@ Thunk::CollectiveExecuteParams::CollectiveExecuteParams(
       global_device_id_map(global_device_id_map),
       nccl_clique_id_callback(nccl_clique_id_callback) {}
 
+absl::Status Thunk::AsyncExecutorBase::Await(
+    const Thunk::ExecuteParams& params) {
+  int device_ordinal = params.stream->parent()->device_ordinal();
+  auto done_event = [this, device_ordinal] {
+    absl::MutexLock lock(&mu_);
+    return done_events_.extract(device_ordinal);
+  }();
+  TF_RET_CHECK(done_event) << "done event not found";
+  params.stream->ThenWaitFor(&done_event.mapped());
+  return absl::OkStatus();
+}
+
+absl::Status Thunk::AsyncExecutorBase::Execute(
+    absl::FunctionRef<Status(const ExecuteParams&)> fn,
+    const ExecuteParams& params, int64_t execution_stream_id) {
+  auto iter = params.additional_compute_streams.find(execution_stream_id);
+  TF_RET_CHECK(iter != params.additional_compute_streams.end());
+  se::Stream& compute_stream = *(iter->second);
+  // Wait until compute inputs are ready.
+  compute_stream.ThenWaitFor(params.stream);
+
+  TF_RETURN_IF_ERROR(fn(params));
+
+  // Create an event on the async stream for the completion of the collective.
+  se::Event done_event(compute_stream.parent());
+  TF_RET_CHECK(done_event.Init());
+  compute_stream.ThenRecordEvent(&done_event);
+
+  int device_ordinal = compute_stream.parent()->device_ordinal();
+  absl::MutexLock lock(&mu_);
+  auto [_, was_inserted] =
+      done_events_.insert({device_ordinal, std::move(done_event)});
+  TF_RET_CHECK(was_inserted) << "done event has not been consumed";
+  return absl::OkStatus();
+}
+
 //===----------------------------------------------------------------------===//
 // Thunk::ExecuteParams
 //===----------------------------------------------------------------------===//
@@ -111,7 +148,8 @@ absl::StatusOr<Thunk::ExecuteParams> Thunk::ExecuteParams::Create(
     const ServiceExecutableRunOptions& run_options,
     const BufferAllocations& buffer_allocations, se::Stream* stream,
     se::Stream* command_buffer_trace_stream,
-    absl::Span<se::Stream* const> async_streams) {
+    absl::Span<se::Stream* const> async_streams,
+    absl::flat_hash_map<int64_t, se::Stream*> additional_compute_streams) {
   TF_ASSIGN_OR_RETURN(auto collective_params,
                       CollectiveExecuteParams::Create(
                           run_options, stream->parent()->device_ordinal()));
@@ -121,7 +159,8 @@ absl::StatusOr<Thunk::ExecuteParams> Thunk::ExecuteParams::Create(
                        run_options.run_options().device_to_host_stream(),
                        run_options.run_options().host_to_device_stream(),
                        run_options.run_options().send_device_memory_function(),
-                       run_options.run_options().recv_device_memory_function());
+                       run_options.run_options().recv_device_memory_function(),
+                       additional_compute_streams);
 }
 
 Thunk::ExecuteParams::ExecuteParams(
@@ -131,7 +170,8 @@ Thunk::ExecuteParams::ExecuteParams(
     CollectiveExecuteParams collective_params,
     se::Stream* device_to_host_stream, se::Stream* host_to_device_stream,
     SendDeviceMemoryFunction* send_device_memory_function,
-    RecvDeviceMemoryFunction* recv_device_memory_function)
+    RecvDeviceMemoryFunction* recv_device_memory_function,
+    absl::flat_hash_map<int64_t, se::Stream*> additional_compute_streams)
     : buffer_allocations(buffer_allocations),
       stream(stream),
       command_buffer_trace_stream(command_buffer_trace_stream),
@@ -140,7 +180,8 @@ Thunk::ExecuteParams::ExecuteParams(
       device_to_host_stream(device_to_host_stream),
       host_to_device_stream(host_to_device_stream),
       send_device_memory_function(send_device_memory_function),
-      recv_device_memory_function(recv_device_memory_function) {}
+      recv_device_memory_function(recv_device_memory_function),
+      additional_compute_streams(additional_compute_streams) {}
 
 //===----------------------------------------------------------------------===//
 
@@ -198,6 +239,15 @@ Thunk::ExecuteParams::ExecuteParams(
   }
 }
 
+se::Stream* Thunk::GetStreamForExecution(const ExecuteParams& params) {
+  if (execution_stream_id_ == kMainComputeStreamId) {
+    return params.stream;
+  }
+  auto iter = params.additional_compute_streams.find(execution_stream_id_);
+  CHECK(iter != params.additional_compute_streams.end());
+  return iter->second;
+}
+
 std::ostream& operator<<(std::ostream& os, Thunk::Kind kind) {
   return os << Thunk::KindToString(kind);
 }
@@ -250,6 +300,15 @@ Thunk::ThunkInfo Thunk::ThunkInfo::WithProfileAnnotation(
   ThunkInfo thunk_info(nullptr);
   thunk_info.profile_annotation =
       absl::StrFormat("Thunk:#hlo_op=%s#", instr->name());
+  auto gpu_backend_config = instr->backend_config<GpuBackendConfig>();
+  if (gpu_backend_config.ok()) {
+    thunk_info.execution_stream_id = std::max(
+        kMainComputeStreamId, gpu_backend_config->operation_queue_id());
+    auto wait_on_queues = gpu_backend_config->wait_on_operation_queues();
+    for (int64_t i = 0; i < wait_on_queues.size(); i++) {
+      thunk_info.wait_on_streams.push_back(wait_on_queues[i]);
+    }
+  }
   return thunk_info;
 }
 
