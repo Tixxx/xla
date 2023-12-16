@@ -230,6 +230,7 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_nccl_collective_max_nchannels(0);
   opts.set_xla_gpu_nccl_p2p_max_nchannels(0);
 
+  opts.set_xla_gpu_multi_streamed_windowed_einsum(false);
   return opts;
 }
 
@@ -1530,6 +1531,9 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
           &DebugOptions::set_xla_gpu_threshold_for_windowed_einsum_mib),
       debug_options->xla_gpu_threshold_for_windowed_einsum_mib(),
       "Threshold to enable windowed einsum (collective matmul) in MB."
+      "Einsums that have partitioned operand(can be either LHS or RHS) that's "
+      "larger "
+      "than this threshold will be transformed to use windowed einsums."
       "Default is 100000"));
   flag_list->push_back(tsl::Flag(
       "xla_gpu_enable_triton_hopper",
@@ -1567,6 +1571,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       bool_setter_for(&DebugOptions::set_xla_gpu_enable_mlir_emitters),
       debug_options->xla_gpu_enable_mlir_emitters(),
       "Enable new MLIR-based emitters."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_multi_streamed_windowed_einsum",
+      bool_setter_for(
+          &DebugOptions::set_xla_gpu_multi_streamed_windowed_einsum),
+      debug_options->xla_gpu_multi_streamed_windowed_einsum(),
+      "Whether to run windowed einsum using multiple compute streams."));
 }  // NOLINT(readability/fn_size)
 
 // Allocates flag_values and flag_objects; this function must not be called more
