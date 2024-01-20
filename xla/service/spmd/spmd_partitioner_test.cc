@@ -4557,8 +4557,7 @@ ENTRY entry {
                             ->root_instruction()
                             ->backend_config<xla::gpu::GpuBackendConfig>()
                             ->wait_on_operation_queues();
-  EXPECT_TRUE(wait_on_queues.size() == 2 && wait_on_queues[0] == 0 &&
-              wait_on_queues[1] == 1);
+  EXPECT_TRUE(wait_on_queues.size() == 1 && wait_on_queues[0] == 1);
 }
 
 TEST_P(SpmdPartitioningTest,
@@ -4614,8 +4613,7 @@ ENTRY entry {
                             ->root_instruction()
                             ->backend_config<xla::gpu::GpuBackendConfig>()
                             ->wait_on_operation_queues();
-  EXPECT_TRUE(wait_on_queues.size() == 2 && wait_on_queues[0] == 0 &&
-              wait_on_queues[1] == 1);
+  EXPECT_TRUE(wait_on_queues.size() == 1 && wait_on_queues[0] == 1);
 }
 
 TEST_P(SpmdPartitioningTest,
@@ -4669,8 +4667,7 @@ ENTRY entry {
                             ->root_instruction()
                             ->backend_config<xla::gpu::GpuBackendConfig>()
                             ->wait_on_operation_queues();
-  EXPECT_TRUE(wait_on_queues.size() == 2 && wait_on_queues[0] == 0 &&
-              wait_on_queues[1] == 1);
+  EXPECT_TRUE(wait_on_queues.size() == 1 && wait_on_queues[0] == 1);
 }
 
 TEST_P(SpmdPartitioningTest,
@@ -4724,8 +4721,7 @@ ENTRY entry {
                             ->root_instruction()
                             ->backend_config<xla::gpu::GpuBackendConfig>()
                             ->wait_on_operation_queues();
-  EXPECT_TRUE(wait_on_queues.size() == 2 && wait_on_queues[0] == 0 &&
-              wait_on_queues[1] == 1);
+  EXPECT_TRUE(wait_on_queues.size() == 1 && wait_on_queues[0] == 1);
 }
 
 TEST_P(SpmdPartitioningTest, ChooseWindowedEinsumOverIncreasedMemUsageOption) {
