@@ -156,6 +156,9 @@ absl::StatusOr<bool> LoopDoubleBufferTransformer::Run(
                   std::back_inserter(while_instrs),
                   HloPredicateIsOp<HloOpcode::kWhile>);
   VLOG(2) << "Processing " << while_instrs.size() << " while loops.";
+  const DebugOptions& debug_options =
+      module->config().debug_options();
+  int64_t threshold = debug_options.xla_gpu_while_loop_double_buffering_threshold_bytes();
 
   for (HloInstruction* while_instr : while_instrs) {
     TF_ASSIGN_OR_RETURN(WhileLoopBackendConfig config,
@@ -172,7 +175,19 @@ absl::StatusOr<bool> LoopDoubleBufferTransformer::Run(
 
     HloComputation* while_body = while_instr->while_body();
 
-    VLOG(2) << "Processing root " << while_body->root_instruction()->ToString();
+    HloInstruction* root = while_body->root_instruction();
+    int64_t total_copy_size = 0;
+    for(auto& instruction : root->mutable_operands()) {
+      if(instruction->opcode() == HloOpcode::kCopy) {
+        total_copy_size += ShapeUtil::ByteSizeOf(instruction->shape());
+      }
+    }
+
+    if(total_copy_size < threshold) {
+      VLOG(2) << "Total copy size " << total_copy_size << " is less than threshold, skipping.";
+      continue;
+    }
+    VLOG(2) << "Processing root " << root->ToString();
 
     auto old_loop_roots = while_body->root_instruction()->mutable_operands();
     HloInstruction* input_parameter = while_body->parameter_instruction(0);

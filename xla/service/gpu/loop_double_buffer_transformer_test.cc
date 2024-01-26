@@ -60,6 +60,15 @@ class GpuLoopDoubleBufferTransformerTest : public HloTestBase {
   DebugOptions GetDebugOptionsForTest() override {
     DebugOptions debug_options = HloTestBase::GetDebugOptionsForTest();
     debug_options.set_xla_gpu_enable_while_loop_double_buffering(true);
+    debug_options.set_xla_gpu_while_loop_double_buffering_threshold_bytes(0);
+    return debug_options;
+  }
+};
+
+class GpuLoopDoubleBufferTransformerThresholdTest : public HloTestBase {
+  DebugOptions GetDebugOptionsForTest() override {
+    DebugOptions debug_options = HloTestBase::GetDebugOptionsForTest();
+    debug_options.set_xla_gpu_enable_while_loop_double_buffering(true);
     return debug_options;
   }
 };
@@ -470,6 +479,50 @@ ENTRY main {
   // associated computations.
   EXPECT_EQ(while_loops_callees.size(), 8);
 }
+
+TEST_F(GpuLoopDoubleBufferTransformerThresholdTest,
+       Threshold) {
+  const char* const kModuleString = R"(
+HloModule loop_unrolling_nested_while_loop_remains_flattened
+
+condition_nested {
+  input_tuple = (s32[]) parameter(0)
+  cond = s32[] get-tuple-element(input_tuple), index=0
+  trip_count = s32[] constant(10)
+  ROOT done = pred[] compare(cond, trip_count), direction=LT
+}
+
+body_nested {
+ input_tuple = (s32[]) parameter(0)
+ cond = s32[] get-tuple-element(input_tuple), index=0
+ one = s32[] constant(1)
+ cond_plus_1 = s32[] add(cond, one)
+ ROOT output = (s32[]) tuple(cond_plus_1)
+}
+
+condition {
+  input_tuple = (s32[]) parameter(0)
+  cond = s32[] get-tuple-element(input_tuple), index=0
+  trip_count = s32[] constant(10)
+  ROOT done = pred[] compare(cond, trip_count), direction=LT
+}
+
+body {
+  input_tuple = (s32[]) parameter(0)
+  ROOT output = (s32[]) while(input_tuple), condition=condition_nested, body=body_nested
+}
+
+ENTRY main {
+ param_0 = (s32[]) parameter(0)
+ ROOT while = (s32[]) while(param_0), condition=condition, body=body, backend_config={"known_trip_count":{"n":"11"}}
+})";
+
+  TF_ASSERT_OK_AND_ASSIGN(std::unique_ptr<xla::HloModule> module,
+                          ParseAndReturnVerifiedModule(kModuleString));
+  LoopDoubleBufferTransformer double_buffer;
+  EXPECT_THAT(double_buffer.Run(module.get()), IsOkAndHolds(false));
+}
+
 }  // namespace
 }  // namespace gpu
 }  // namespace xla

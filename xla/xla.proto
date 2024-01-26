@@ -647,6 +647,7 @@ message DebugOptions {
 
   // Enable double buffering for loops.
   bool xla_gpu_enable_while_loop_double_buffering = 248;
+  bool xla_gpu_while_loop_double_buffering_threshold_bytes = 270;
 
   // Change the layout of the second triton dot operand to be column major.
   // Only works for (bf16 x bf16) -> bf16.
@@ -675,7 +676,7 @@ message DebugOptions {
   // If enabled, uses the libnvptxcompiler library to compile PTX to cuBIN.
   bool xla_gpu_enable_libnvptxcompiler = 269;
 
-  // Next id: 270
+  // Next id: 271
 
   // Extra options to pass to the compilation backend (e.g. LLVM); specific
   // interpretation of these values is left to the backend.
