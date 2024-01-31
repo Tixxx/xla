@@ -139,6 +139,7 @@ limitations under the License.
 #include "xla/service/gpu/runtime3/replica_id_thunk.h"
 #include "xla/service/gpu/runtime3/send_recv_thunk.h"
 #include "xla/service/gpu/runtime3/sequential_thunk.h"
+#include "xla/service/gpu/runtime3/wait_for_streams_thunk.h"
 #include "xla/service/gpu/runtime3/while_thunk.h"
 #include "xla/service/gpu/thunk.h"
 #include "xla/service/llvm_ir/buffer_assignment_util.h"
@@ -3639,6 +3640,37 @@ absl::Status IrEmitterUnnested::EmitNcclAsyncDone(Thunk::Kind kind,
   return absl::OkStatus();
 }
 
+absl::Status IrEmitterUnnested::EmitWaitForStreamsThunk(
+    const HloInstruction* inst, GpuBackendConfig& gpu_config,
+    bool is_async_done) {
+  const HloInstruction* wrapped = inst->async_wrapped_instruction();
+  std::vector<ExecutionStreamId> wait_on_streams;
+  ExecutionStreamId source_stream_id = Thunk::GetMainComputeStreamId();
+  // If it's for an async done, then we need to sychronize on the execution
+  // stream of the instruction from main compute stream
+  if (is_async_done) {
+    wait_on_streams.push_back(
+        ExecutionStreamId(gpu_config.operation_queue_id()));
+  } else if (gpu_config.wait_on_operation_queues().size() == 0) {
+    // If wait on queue is empty, we just synchronize on the main compute
+    // stream from the execution stream.
+    wait_on_streams.push_back(Thunk::GetMainComputeStreamId());
+    source_stream_id = gpu_config.operation_queue_id();
+  } else {
+    // Else, we synchronize on all specified
+    // streams from the execution stream.
+    for (int64_t stream_id : gpu_config.wait_on_operation_queues()) {
+      wait_on_streams.push_back(ExecutionStreamId(stream_id));
+    }
+    source_stream_id = gpu_config.operation_queue_id();
+  }
+
+  AddThunkToThunkSequence(std::make_unique<WaitForStreamsThunk>(
+      Thunk::ThunkInfo::WithProfileAnnotation(inst), source_stream_id,
+      wait_on_streams));
+  return absl::OkStatus();
+}
+
 absl::StatusOr<std::vector<ShapedSlice>> IrEmitterUnnested::GetShapedSlices(
     mlir::Operation::operand_range operands) {
   std::vector<ShapedSlice> shaped_slices;
@@ -4284,6 +4316,14 @@ absl::Status IrEmitterUnnested::EmitOp(
     return EmitCommandBufferThunk(hlo_for_lmhlo.at(op));
   }
 
+  if (mlir::isa<mlir::lmhlo::AsyncStartOp>(op)) {
+    return EmitHloInstruction(hlo_for_lmhlo.at(op));
+  }
+
+  if (mlir::isa<mlir::lmhlo::AsyncDoneOp>(op)) {
+    return EmitHloInstruction(hlo_for_lmhlo.at(op));
+  }
+
   // In GPU runtime point-to-point communications implemented as runtime custom
   // calls, and we do not need real thunks to construct them, so we can emit
   // stubs that always fail. This is deprecated and will be removed in Q1 2024.
@@ -4355,13 +4395,27 @@ absl::Status IrEmitterUnnested::EmitHloInstruction(
           return EmitNcclAsyncDone(Thunk::kNcclReduceScatterDone, instr);
         case HloOpcode::kAllToAll:
           return EmitNcclAsyncDone(Thunk::kNcclAllToAllDone, instr);
-        default:
+        default: {
+          if (wrapped->has_backend_config()) {
+            TF_ASSIGN_OR_RETURN(
+                xla::gpu::GpuBackendConfig gpu_config,
+                wrapped->backend_config<xla::gpu::GpuBackendConfig>());
+            if (gpu_config.operation_queue_id() != 0) {
+              // If there an async-done instruction that wraps an instruction
+              // that runs on a non-default stream, then we will
+              // just emit syncOnStreamThunk().
+              return EmitWaitForStreamsThunk(instr, gpu_config,
+                                            /*is_async_done=*/true);
+            }
+          }
+
           return Internal("Unsupported async done wrapped instruction: %s",
                           HloOpcodeString(wrapped->opcode()));
+        }
       }
     }
     case HloOpcode::kAsyncStart: {
-      const HloInstruction* wrapped = instr->async_wrapped_instruction();
+      HloInstruction* wrapped = instr->async_wrapped_instruction();
       switch (wrapped->opcode()) {
         case HloOpcode::kReduceScatter: {
           auto* reduce_scatter = Cast<HloReduceScatterInstruction>(wrapped);
@@ -4375,9 +4429,27 @@ absl::Status IrEmitterUnnested::EmitHloInstruction(
           return EmitNcclThunk<NcclAllToAllStartThunk, HloAllToAllInstruction>(
               Thunk::kNcclAllToAll, instr, all_to_all, std::nullopt);
         }
-        default:
+        default: {
+          if (instr->has_backend_config()) {
+            TF_ASSIGN_OR_RETURN(
+                xla::gpu::GpuBackendConfig gpu_config,
+                instr->backend_config<xla::gpu::GpuBackendConfig>());
+            if (gpu_config.operation_queue_id() != 0) {
+              // If there an async instruction that wraps an instruction
+              // that runs on a non-default stream, then we will
+              // emit syncOnStreamThunk(source=execution_stream,
+              //                        wait_on=main_compute_stream)
+              // then the thunk of wrapped instruction.
+              TF_RETURN_IF_ERROR(
+                  EmitWaitForStreamsThunk(instr, gpu_config,
+                                         /*is_async_done=*/false));
+              TF_RETURN_IF_ERROR(wrapped->set_backend_config(gpu_config));
+              return EmitHloInstruction(wrapped);
+            }
+          }
           return Internal("Unsupported async start wrapped instruction: %s",
                           HloOpcodeString(wrapped->opcode()));
+        }
       }
     }
 

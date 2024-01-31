@@ -42,13 +42,54 @@ namespace xla {
 namespace gpu {
 
 namespace {
-absl::StatusOr<bool> AnnotateStreamAttributesForUsers(HloInstruction* instr) {
-  auto instr_gpu_config = instr->backend_config<GpuBackendConfig>();
-  if (!instr_gpu_config.ok()) {
+
+bool IsOnlyRootNonDefaultStream(HloComputation* computation) {
+  HloInstruction* root  = computation->root_instruction();
+  auto root_gpu_config = root->backend_config<GpuBackendConfig>();
+  if (!root_gpu_config.ok()) {
     return false;
   }
+  int64_t root_stream_id = root_gpu_config->operation_queue_id();
+  VLOG(2) << "Found fusion computation's root stream id to be " << root_stream_id;
+
+  if (root_stream_id == StreamAttributeAnnotator::kDefaultComputeStreamId) {
+    return false;
+  }
+  for (HloInstruction* instr : computation->MakeInstructionPostOrder()) {
+    if (instr == root) {
+      continue;
+    }
+    if (instr->backend_config<GpuBackendConfig>()->operation_queue_id() != StreamAttributeAnnotator::kDefaultComputeStreamId &&
+      instr->backend_config<GpuBackendConfig>()->operation_queue_id() != root_stream_id) {
+      return false;
+    }
+  }
+  return true;
+}
+absl::StatusOr<bool> AnnotateStreamAttributesForInstruction(HloInstruction* instr, GpuBackendConfig& instr_gpu_config) {
+
+  if(instr->called_computations().size() != 1) {
+    return false;
+  }
+  HloComputation* called_comp = instr->called_computations()[0];
+  int64_t stream_id = instr_gpu_config.operation_queue_id();
+
+  if(!IsOnlyRootNonDefaultStream(called_comp) ||
+      stream_id != StreamAttributeAnnotator::kDefaultComputeStreamId) {
+    return false;
+  }
+
+  auto comp_root_gpu_config = called_comp->root_instruction()->backend_config<GpuBackendConfig>();
+
+  instr_gpu_config.set_operation_queue_id(comp_root_gpu_config->operation_queue_id());
+  *instr_gpu_config.mutable_wait_on_operation_queues() = comp_root_gpu_config->wait_on_operation_queues();
+  TF_RETURN_IF_ERROR(instr->set_backend_config(instr_gpu_config));
+  return true;
+}
+
+absl::StatusOr<bool> AnnotateStreamAttributesForUsers(HloInstruction* instr, GpuBackendConfig& instr_gpu_config) {
   bool changed = false;
-  int64_t stream_id = instr_gpu_config->operation_queue_id();
+  int64_t stream_id = instr_gpu_config.operation_queue_id();
   if (stream_id == StreamAttributeAnnotator::kDefaultComputeStreamId) {
     return changed;
   }
@@ -64,7 +105,7 @@ absl::StatusOr<bool> AnnotateStreamAttributesForUsers(HloInstruction* instr) {
     TF_ASSIGN_OR_RETURN(GpuBackendConfig gpu_config,
                         user->backend_config<GpuBackendConfig>());
     auto it = absl::c_find(gpu_config.wait_on_operation_queues(), stream_id);
-    if (it == gpu_config.wait_on_operation_queues().end()) {
+    if (it == gpu_config.wait_on_operation_queues().end() && gpu_config.operation_queue_id() != stream_id) {
       gpu_config.mutable_wait_on_operation_queues()->Add(stream_id);
       TF_RETURN_IF_ERROR(user->set_backend_config(gpu_config));
       changed = true;
@@ -79,19 +120,28 @@ absl::StatusOr<bool> StreamAttributeAnnotator::Run(
     HloModule* module,
     const absl::flat_hash_set<absl::string_view>& execution_threads) {
   XLA_VLOG_LINES(
-      2, "StreamAttributeAnnotator::Run(), before:\n" + module->ToString());
+      5, "StreamAttributeAnnotator::Run(), before:\n" + module->ToString());
   bool changed = false;
   for (const HloComputation* comp : module->computations(execution_threads)) {
-    for (HloInstruction* instr : comp->instructions()) {
+    for (HloInstruction* instr : comp->MakeInstructionPostOrder()) {
       if (!instr->has_backend_config()) {
         continue;
       }
-      TF_ASSIGN_OR_RETURN(bool result, AnnotateStreamAttributesForUsers(instr));
-      changed |= result;
+      auto instr_gpu_config = instr->backend_config<GpuBackendConfig>();
+      if (!instr_gpu_config.ok()) {
+        continue;
+      }
+      if (instr->opcode() == HloOpcode::kFusion) {
+        TF_ASSIGN_OR_RETURN(bool comp_result, AnnotateStreamAttributesForInstruction(instr, instr_gpu_config.value()));
+        changed |= comp_result;
+      }
+
+      TF_ASSIGN_OR_RETURN(bool user_result, AnnotateStreamAttributesForUsers(instr, instr_gpu_config.value()));
+      changed |= user_result;
     }
   }
   XLA_VLOG_LINES(
-      2, "StreamAttributeAnnotator::Run(), after:\n" + module->ToString());
+      5, "StreamAttributeAnnotator::Run(), after:\n" + module->ToString());
   return changed;
 }
 

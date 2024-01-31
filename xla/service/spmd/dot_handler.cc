@@ -974,7 +974,7 @@ StatusOr<HloInstruction*> EmitWindowedDotGeneral(
   auto get_partial_bid_results =
       [&](HloInstruction* l, HloInstruction* r, HloInstruction* o,
           HloInstruction* extra_inout, HloInstruction* cw_cp_output,
-          HloInstruction* i) -> StatusOr<std::vector<HloInstruction*>> {
+          HloInstruction* i, int64_t queue_id = 0) -> StatusOr<std::vector<HloInstruction*>> {
     auto partition_id =
         lhs.state().collective_ops_creator.create_partition_id(&body_b);
     auto partition_count = body_b.AddInstruction(HloInstruction::CreateConstant(
@@ -1238,6 +1238,16 @@ StatusOr<HloInstruction*> EmitWindowedDotGeneral(
       dot = body_b.AddInstruction(
           HloInstruction::CreateDot(new_dot_shape, dot_lhs, dot_rhs, new_ddnums,
                                     original_hlo->precision_config()));
+      LOG(ERROR) << "####creating bid dot with queue id: " << queue_id;
+      if (queue_id > 0) {
+        // both the dot and its consumer are dispatched to additional stream
+        // so we don't block main stream.
+        auto dot_gpu_config = dot->backend_config<xla::gpu::GpuBackendConfig>();
+        dot_gpu_config->set_operation_queue_id(queue_id);
+
+
+        TF_CHECK_OK(dot->set_backend_config(dot_gpu_config.value()));
+      }
     } else {
       if (!windowed_at_contracting_dims && !windowed_at_batch_dims) {
         if (lhs_concat_dim != -1) {
@@ -1405,11 +1415,10 @@ StatusOr<HloInstruction*> EmitWindowedDotGeneral(
       auto o_gpu_config = o->backend_config<xla::gpu::GpuBackendConfig>();
       dot_gpu_config->set_operation_queue_id(queue_id);
 
-      o_gpu_config->set_operation_queue_id(queue_id);
-      o_gpu_config->mutable_wait_on_operation_queues()->Add(queue_id);
+      // o_gpu_config->set_operation_queue_id(queue_id);
 
       TF_CHECK_OK(dot->set_backend_config(dot_gpu_config.value()));
-      TF_CHECK_OK(o->set_backend_config(o_gpu_config.value()));
+      // TF_CHECK_OK(o->set_backend_config(o_gpu_config.value()));
     }
 
     return o;
@@ -1446,6 +1455,9 @@ StatusOr<HloInstruction*> EmitWindowedDotGeneral(
       // 0 -> 1, 1 -> 2, 2 -> 3, ...
       cw_sd_pairs[source] = {source, (source + 1) % num_partitions};
     }
+
+    int64_t queue_id =
+        use_multi_streamed_dots ? hlo_query::NextChannelId(*module) : 0;
 
     // Even number iteration.
     auto next_l = l;
@@ -1509,7 +1521,7 @@ StatusOr<HloInstruction*> EmitWindowedDotGeneral(
 
     TF_ASSIGN_OR_RETURN(outputs,
                         get_partial_bid_results(next_l, next_r, o, cw_cp_output,
-                                                next_cw_cp_output, i));
+                                                next_cw_cp_output, i, queue_id));
     o = outputs[0];
     next_cw_cp_output = outputs[1];
 
@@ -1616,15 +1628,15 @@ StatusOr<HloInstruction*> EmitWindowedDotGeneral(
       body_b.AddInstruction(HloInstruction::CreateTuple(
           {second_next_l, second_next_r, o, extra_inout, i}));
     }
-    if (queue_id > 0) {
-      // Tell all users of o to wait on this queue if using multiple queues.
-      for (HloInstruction* user : o->users()) {
-        auto user_backend_config =
-            user->backend_config<xla::gpu::GpuBackendConfig>();
-        user_backend_config->mutable_wait_on_operation_queues()->Add(queue_id);
-        TF_CHECK_OK(user->set_backend_config(user_backend_config.value()));
-      }
-    }
+    // if (queue_id > 0) {
+    //   // Tell all users of o to wait on this queue if using multiple queues.
+    //   for (HloInstruction* user : o->users()) {
+    //     auto user_backend_config =
+    //         user->backend_config<xla::gpu::GpuBackendConfig>();
+    //     user_backend_config->mutable_wait_on_operation_queues()->Add(queue_id);
+    //     TF_CHECK_OK(user->set_backend_config(user_backend_config.value()));
+    //   }
+    // }
   } else {
     auto real_i = i;
     if (operands_sharded_at_contracting_dims) {

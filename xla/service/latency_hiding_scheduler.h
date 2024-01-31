@@ -61,6 +61,7 @@ enum class ResourceType {
   kSendHost = 7,
   kRecvHost = 8,
   kNumResources = 9,
+  kAsyncCompute = 10,
   kTargetDefinedResourcesBound = 10000,
 };
 

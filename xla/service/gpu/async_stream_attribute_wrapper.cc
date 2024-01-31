@@ -53,7 +53,7 @@ absl::StatusOr<bool> AsynchronizeInstruction(HloInstruction* instr) {
   HloComputation* computation = instr->parent();
   TF_ASSIGN_OR_RETURN(HloInstruction * done,
                       computation->CreateAsyncInstructions(
-                          instr, {}, HloInstruction::kMainExecutionThread,
+                          instr, {}, AsyncStreamAttributeWrapper::kParallelExecutionThread,
                           /*replace=*/true));
   return true;
 }
@@ -65,7 +65,7 @@ absl::StatusOr<bool> AsyncStreamAttributeWrapper::Run(
   XLA_VLOG_LINES(
       2, "AsyncStreamAttributeWrapper::Run(), before:\n" + module->ToString());
   bool changed = false;
-  for (const HloComputation* comp : module->computations(execution_threads)) {
+  for (const HloComputation* comp : module->MakeNonfusionComputations(execution_threads)) {
     for (HloInstruction* instr : comp->instructions()) {
       if (!instr->has_backend_config()) {
         continue;

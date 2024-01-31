@@ -569,6 +569,7 @@ class LayoutNormalizationVisitor : public DfsHloRewriteVisitor {
         HloInstruction * new_dus,
         MakeDynamicUpdateSliceHlo(new_operand, new_update, new_start_indices,
                                   &hlo->metadata()));
+    new_dus->set_raw_backend_config_string(hlo->raw_backend_config_string());
     *new_dus->mutable_shape()->mutable_layout() = new_operand->shape().layout();
     SetVisited(*new_dus);
 

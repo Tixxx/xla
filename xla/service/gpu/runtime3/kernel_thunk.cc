@@ -164,9 +164,12 @@ absl::Status KernelThunk::ExecuteOnStream(const ExecuteParams& params) {
   if (VLOG_IS_ON(100)) {
     PrintBufferContents(params.stream, buffer_args);
   }
+  TF_ASSIGN_OR_RETURN(se::Stream* stream, GetStreamForExecution(
+                                  Thunk::execution_stream_id(),
+                                  params));
 
   return ExecuteKernelOnStream(*kernel, buffer_args, launch_dimensions,
-                               params.stream);
+                               stream);
 }
 
 //===----------------------------------------------------------------------===//

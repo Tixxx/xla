@@ -182,6 +182,7 @@ static bool IsAsyncStartCommand(const HloInstruction* hlo,
     if (hlo->async_wrapped_opcode() == HloOpcode::kReduceScatter) {
       return config.contains(DebugOptions::COLLECTIVES);
     }
+    return true;
   }
 
   return false;
@@ -198,6 +199,7 @@ static bool IsAsyncDoneCommand(const HloInstruction* hlo,
     if (hlo->async_wrapped_opcode() == HloOpcode::kReduceScatter) {
       return config.contains(DebugOptions::COLLECTIVES);
     }
+    return true;
   }
 
   return false;
@@ -643,8 +645,9 @@ absl::StatusOr<bool> CommandBufferScheduling::Run(
   for (HloComputation* comp : order) {
     // Skip special computations that do not have lowering to thunks.
     if (comp->IsFusionComputation() || comp->IsAsyncComputation() ||
-        comp->IsCustomCallComputation())
-      continue;
+        comp->IsCustomCallComputation()) {
+          continue;
+        }
 
     // Skip computations that already part of command buffers.
     if (processed_command_buffers.contains(comp)) continue;

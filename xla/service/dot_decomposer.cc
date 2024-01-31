@@ -194,6 +194,7 @@ Status CanonicalizeDot(HloInstruction* original_dot) {
       ShapeUtil::MakeShape(original_dot->shape().element_type(), dot_dims,
                            dot_dynamic_dims),
       reshaped_lhs, reshaped_rhs, dot_dnums, original_dot->precision_config()));
+  dot->set_raw_backend_config_string(original_dot->raw_backend_config_string());
   original_dot->SetupDerivedInstruction(dot);
 
   std::unique_ptr<HloInstruction> replacement =

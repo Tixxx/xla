@@ -1831,10 +1831,11 @@ tsl::StatusOr<mlir::Operation*> LhloDialectEmitter::EmitAsyncStartOp(
     case xla::HloOpcode::kAllToAll:
       return EmitAllToAllStartOp(instr);
     default:
-      return tsl::errors::InvalidArgument(
-          "Unexpected instruction %s wrapped in %s",
-          xla::HloOpcodeString(async->async_wrapped_opcode()),
-          HloOpcodeString(instr->opcode()));
+      return EmitDummyAsyncStartOp(instr);
+      // return tsl::errors::InvalidArgument(
+      //     "Unexpected instruction %s wrapped in %s",
+      //     xla::HloOpcodeString(async->async_wrapped_opcode()),
+      //     HloOpcodeString(instr->opcode()));
   }
 }
 
@@ -1848,10 +1849,11 @@ tsl::StatusOr<mlir::Operation*> LhloDialectEmitter::EmitAsyncDoneOp(
     case xla::HloOpcode::kAllToAll:
       return EmitAllToAllDoneOp(instr);
     default:
-      return tsl::errors::InvalidArgument(
-          "Unexpected instruction %s wrapped in %s",
-          xla::HloOpcodeString(async->async_wrapped_opcode()),
-          HloOpcodeString(instr->opcode()));
+      return EmitDummyAsyncDoneOp(instr);
+      // return tsl::errors::InvalidArgument(
+      //     "Unexpected instruction %s wrapped in %s",
+      //     xla::HloOpcodeString(async->async_wrapped_opcode()),
+      //     HloOpcodeString(instr->opcode()));
   }
 }
 
@@ -2191,6 +2193,16 @@ tsl::StatusOr<lmhlo::CommandBufferOp> LhloDialectEmitter::EmitCommandBufferOp(
     return absl::InternalError("Called computation must be a command buffer");
   }
   return builder_.create<lmhlo::CommandBufferOp>(getLocation(instr));
+}
+
+tsl::StatusOr<lmhlo::AsyncStartOp> LhloDialectEmitter::EmitDummyAsyncStartOp(
+    const xla::HloInstruction* instr) {
+  return builder_.create<lmhlo::AsyncStartOp>(getLocation(instr));
+}
+
+tsl::StatusOr<lmhlo::AsyncDoneOp> LhloDialectEmitter::EmitDummyAsyncDoneOp(
+    const xla::HloInstruction* instr) {
+  return builder_.create<lmhlo::AsyncDoneOp>(getLocation(instr));
 }
 
 // Sets builder insertion point for a new `memref.view` operation in the parent

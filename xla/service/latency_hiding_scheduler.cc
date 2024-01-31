@@ -146,6 +146,8 @@ bool AsyncTracker::IsSupportedAsyncDone(const HloInstruction& hlo) const {
 
 // Returns if this is an Async op start that the scheduler supports.
 bool AsyncTracker::IsSupportedAsyncStart(const HloInstruction& hlo) const {
+      LOG(ERROR) << "####determining IsSupportedAsyncDone for " << hlo.ToString() << " with thread: " << hlo.async_execution_thread();
+
   CanonicalAsyncOp op = GetCanonicalAsyncOp(hlo);
   if (op.outer == HloOpcode::kSend || op.outer == HloOpcode::kRecv) {
     return config_.schedule_send_recvs;
@@ -193,11 +195,13 @@ ResourcesVector AsyncTracker::GetResourcesFromInstructionImpl(
   if (op.outer == HloOpcode::kAsyncStart || op.outer == HloOpcode::kAsyncDone) {
     ResourceType type = get_resource_for_op(op.inner);
     if (type == ResourceType::kNoResource) {
+      LOG(ERROR) << "###NO RESOURCE FOR : " << hlo.ToString();
       return {};
     }
     ResourceUsageType usage = op.outer == HloOpcode::kAsyncStart
                                   ? ResourceUsageType::kResourceRelease
                                   : ResourceUsageType::kResourceOccupy;
+
     return {std::make_pair(ResourceTypeToIndex(type), usage)};
   }
 
@@ -258,8 +262,9 @@ ResourcesVector AsyncTracker::GetResourcesFromInstruction(
 
 int64_t AsyncTracker::GetNumResourcesPerInstruction(
     ResourceType resource_type, const HloInstruction& instr) const {
-  return GetNumResourcesPerInstruction(ResourceTypeToIndex(resource_type),
+      int64_t resource = GetNumResourcesPerInstruction(ResourceTypeToIndex(resource_type),
                                        instr);
+  return resource;
 }
 
 int64_t AsyncTracker::GetNumResourcesPerInstruction(
@@ -341,6 +346,9 @@ void AsyncTracker::SetConcurrentResourceLimits(
       config_.send_recv_host_overlap_limit;
   max_concurrent_resource[ResourceTypeToIndex(ResourceType::kRecvHost)] =
       config_.send_recv_host_overlap_limit;
+  max_concurrent_resource[ResourceTypeToIndex(ResourceType::kAsyncCompute)] =
+      1;
+
   // Set the limits for target-defined resources
   const int64_t first_target_resource =
       AsyncTracker::GetFirstTargetDefinedResource();
@@ -368,6 +376,8 @@ absl::string_view AsyncTracker::GetResourceName(int64_t resource_type) const {
       return "kSendHost";
     case ResourceTypeToIndex(ResourceType::kRecvHost):
       return "kRecvHost";
+    case ResourceTypeToIndex(ResourceType::kAsyncCompute):
+      return "kAsyncCompute";
     default:
       return "Not a valid default resource";
   }

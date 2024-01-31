@@ -154,6 +154,9 @@ class LhloDialectEmitter : public xla::ConstDfsHloVisitorWithDefault {
   tsl::StatusOr<lmhlo::CommandBufferOp> EmitCommandBufferOp(
       const xla::HloInstruction* instr);
 
+  tsl::StatusOr<lmhlo::AsyncStartOp> EmitDummyAsyncStartOp(const xla::HloInstruction* instr);
+  tsl::StatusOr<lmhlo::AsyncDoneOp> EmitDummyAsyncDoneOp(const xla::HloInstruction* instr);
+
   tsl::Status ImportAsLmhloRegion(xla::HloComputation* computation,
                                   mlir::Region* region);
 
