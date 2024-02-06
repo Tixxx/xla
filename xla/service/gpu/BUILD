@@ -5574,6 +5574,7 @@ cc_library(
     hdrs = ["stream_attribute_annotator.h"],
     deps = [
         ":backend_configs_cc",
+        ":thunk",
         "//xla:status",
         "//xla:statusor",
         "//xla:util",
@@ -5614,7 +5615,7 @@ cc_library(
     hdrs = ["async_stream_attribute_wrapper.h"],
     deps = [
         ":backend_configs_cc",
-        ":stream_attribute_annotator",
+        ":thunk",
         "//xla:status",
         "//xla:statusor",
         "//xla:util",

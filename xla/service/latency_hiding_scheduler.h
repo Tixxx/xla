@@ -61,7 +61,8 @@ enum class ResourceType {
   kSendRecv = 7,
   kSendHost = 8,
   kRecvHost = 9,
-  kNumResources = 10,
+  kAsyncCompute = 10,
+  kNumResources = 11,
   kTargetDefinedResourcesBound = 10000,
 };
 
@@ -100,6 +101,7 @@ struct SchedulerConfig {
   int64_t reduce_scatter_overlap_limit = 1;
   int64_t send_recv_overlap_limit = 1;
   int64_t send_recv_host_overlap_limit = 1;
+  int64_t async_compute_overlap_limit = 1;
   int64_t copy_overlap_limit = 1;
   uint64_t memory_limit = UINT64_MAX;
   bool schedule_send_recvs = false;
