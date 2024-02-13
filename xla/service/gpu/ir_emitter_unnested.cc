@@ -4205,6 +4205,21 @@ absl::Status IrEmitterUnnested::EmitSendThunk(const HloSendInstruction* instr) {
     const auto& hlo_config = ir_emitter_context_->hlo_module().config();
     const int64_t replica_count = hlo_config.replica_count();
     const int64_t partition_count = hlo_config.num_partitions();
+      // TJX start
+      TF_ASSIGN_OR_RETURN(
+          xla::gpu::GpuBackendConfig gpu_config,
+          instr->backend_config<xla::gpu::GpuBackendConfig>());
+      VLOG(5) << "SendThunk with op queue id " << gpu_config.operation_queue_id();
+
+      if (gpu_config.operation_queue_id() != Thunk::GetMainComputeStreamId().value()) {
+        VLOG(5) << "Emitting WaitForStreams for SendThunk";
+
+        TF_RETURN_IF_ERROR(
+            EmitWaitForStreamsThunk(instr, gpu_config,
+                                    /*is_async_done=*/false));
+      }
+      // TJX done
+
     const NcclCollectiveThunk::Buffer nccl_buffer = {
         /*element_count=*/ShapeUtil::ElementsIn(src->shape()),
         /*source_buffer=*/buffer,
@@ -4232,7 +4247,21 @@ absl::Status IrEmitterUnnested::EmitSendDoneThunk(
     return absl::InternalError("Unknown send done instruction channel id");
 
   if (!instr->is_host_transfer()) {
-    return EmitNcclAsyncDone(Thunk::kNcclSendDone, instr);
+      // TJX start
+      TF_ASSIGN_OR_RETURN(
+          xla::gpu::GpuBackendConfig gpu_config,
+          instr->backend_config<xla::gpu::GpuBackendConfig>());
+      VLOG(5) << "SendDoneThunk with op queue id " << gpu_config.operation_queue_id();
+      auto status = EmitNcclAsyncDone(Thunk::kNcclSendDone, instr);
+      if (gpu_config.operation_queue_id() != Thunk::GetMainComputeStreamId().value()) {
+        VLOG(5) << "Emitting WaitForStreams for EmitSendDoneThunk";
+
+        return EmitWaitForStreamsThunk(instr, gpu_config,
+                                /*is_async_done=*/true);
+      }
+      // TJX done
+
+    return status;
   }
 
   AddThunkToThunkSequence(std::make_unique<SendDoneThunk>(
@@ -4252,6 +4281,22 @@ absl::Status IrEmitterUnnested::EmitRecvThunk(const HloRecvInstruction* instr) {
     const auto& hlo_config = ir_emitter_context_->hlo_module().config();
     const int64_t replica_count = hlo_config.replica_count();
     const int64_t partition_count = hlo_config.num_partitions();
+      // TJX start
+      TF_ASSIGN_OR_RETURN(
+          xla::gpu::GpuBackendConfig gpu_config,
+          instr->backend_config<xla::gpu::GpuBackendConfig>());
+      VLOG(5) << "RecvThunk with op queue id " << gpu_config.operation_queue_id();
+
+      if (gpu_config.operation_queue_id() != Thunk::GetMainComputeStreamId().value()) {
+        VLOG(5) << "Emitting WaitForStreams for EmitRecvThunk";
+
+        TF_RETURN_IF_ERROR(
+            EmitWaitForStreamsThunk(instr, gpu_config,
+                                    /*is_async_done=*/false));
+      }
+      // TJX done
+
+
     const NcclCollectiveThunk::Buffer nccl_buffer = {
         /*element_count=*/ShapeUtil::ElementsIn(instr->shape().tuple_shapes(0)),
         /*source_buffer=*/buffer,
@@ -4280,7 +4325,21 @@ absl::Status IrEmitterUnnested::EmitRecvDoneThunk(
     return absl::InternalError("Unknown recv done instruction channel id");
 
   if (!instr->is_host_transfer()) {
-    return EmitNcclAsyncDone(Thunk::kNcclRecvDone, instr);
+      // TJX start
+      TF_ASSIGN_OR_RETURN(
+          xla::gpu::GpuBackendConfig gpu_config,
+          instr->backend_config<xla::gpu::GpuBackendConfig>());
+      VLOG(5) << "RecvDoneThunk with op queue id " << gpu_config.operation_queue_id();
+      auto status = EmitNcclAsyncDone(Thunk::kNcclRecvDone, instr);
+      if (gpu_config.operation_queue_id() != Thunk::GetMainComputeStreamId().value()) {
+        VLOG(5) << "Emitting WaitForStreams for EmitRecvDoneThunk";
+
+        return EmitWaitForStreamsThunk(instr, gpu_config,
+                                /*is_async_done=*/true);
+      }
+      // TJX done
+
+    return status;
   }
 
   AddThunkToThunkSequence(std::make_unique<RecvDoneThunk>(
