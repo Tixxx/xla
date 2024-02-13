@@ -182,6 +182,9 @@ class NcclCollectiveThunk : public Thunk {
  private:
   bool IsAsync() const { return async_events_ != nullptr; }
   int64_t GetStreamId() const {
+    if (execution_stream_id() != Thunk::GetMainComputeStreamId()) {
+      return execution_stream_id().value();
+    }
     return xla::gpu::GetStreamId(IsAsync(), GetAsyncStreamKind());
   }
 
