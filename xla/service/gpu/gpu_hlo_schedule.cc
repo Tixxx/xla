@@ -291,10 +291,10 @@ SchedulerConfig GetSchedulerConfig(int64_t memory_limit) {
 // the fact that the runtime use a stream to run asynchronous collective
 // operations and another stream to run P2P Send and Recv operations.
 enum class GpuResourceType {
-  kGpuAsyncStreamSend = 0,         // The resource for P2P Send operation.
-  kGpuAsyncStreamRecv = 1,         // The resource for P2P Recv operation.
+  kGpuAsyncStreamSend = 0,  // The resource for P2P Send operation.
+  kGpuAsyncStreamRecv = 1,  // The resource for P2P Recv operation.
   kGpuAsyncStreamCollectives = 2,  // The resource for collective operations.
-  kGpuAsyncStreamComputes = 3,     // The resource for async compute operations.
+  kGpuAsyncStreamComputes = 3,  // The resource for async compute operations.
   kNumTargetResources = 4,
 };
 
@@ -312,8 +312,9 @@ class GpuAsyncTrackerBase : public AsyncTracker {
   bool IsAsyncComputeOp(const HloInstruction& hlo) const {
     return (hlo.opcode() == HloOpcode::kAsyncStart ||
             hlo.opcode() == HloOpcode::kAsyncDone) &&
-      !hlo_query::IsCollectiveCommunicationOp(hlo.async_wrapped_opcode()) &&
-      hlo.async_execution_thread() != hlo.parent()->execution_thread();
+           !hlo_query::IsCollectiveCommunicationOp(
+               hlo.async_wrapped_opcode()) &&
+           hlo.async_execution_thread() != hlo.parent()->execution_thread();
   }
 
   bool IsSupportedAsyncDone(const HloInstruction& hlo) const override {
@@ -357,7 +358,7 @@ class GpuAsyncTracker : public GpuAsyncTrackerBase {
         add_resource(GpuResourceType::kGpuAsyncStreamSend);
       } else if (op.inner == HloOpcode::kRecv) {
         add_resource(GpuResourceType::kGpuAsyncStreamRecv);
-      } else if (hlo_query::IsCollectiveCommunicationOp(op.inner)){
+      } else if (hlo_query::IsCollectiveCommunicationOp(op.inner)) {
         add_resource(GpuResourceType::kGpuAsyncStreamCollectives);
       } else {
         add_resource(GpuResourceType::kGpuAsyncStreamComputes);
@@ -395,7 +396,7 @@ class GpuAsyncTracker : public GpuAsyncTrackerBase {
     // for an async computation operation which will be allocated with
     // a dedicated compute stream. It can run concurrently with
     // another collective.
-    if((resource_type - first_target_resource) ==
+    if ((resource_type - first_target_resource) ==
         static_cast<int64_t>(GpuResourceType::kGpuAsyncStreamComputes)) {
       return 2;
     }
