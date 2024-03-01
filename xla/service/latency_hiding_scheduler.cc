@@ -1688,6 +1688,11 @@ void HloScheduleGraph::InitializeGraphAnalysis(
             std::max(pred.Target().GetGraphDepth() + 1, node->GetGraphDepth()));
       }
     } else {
+      if(node->GetInstr().name() == "collective-permute-start") {
+        LOG(ERROR) << "####setting force delay for " << node->GetInstr().ToString();
+        node->SetForceDelay(true);
+      }
+
       for (auto& pred : node->GetPredecessors()) {
         node->SetAsyncDepth(
             std::max(pred.Target().GetAsyncDepth(), node->GetAsyncDepth()));

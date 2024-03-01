@@ -2071,6 +2071,9 @@ void HloInstruction::SetupDerivedInstruction(
     derived_instruction->mutable_rare()->frontend_attributes.Clear();
     derived_instruction->mutable_rare()->statistics_viz.Clear();
   }
+  if (opcode() == derived_instruction->opcode() && has_backend_config()) {
+    derived_instruction->set_raw_backend_config_string(raw_backend_config_string());
+  }
 }
 
 bool HloInstruction::IsRoot() const {
