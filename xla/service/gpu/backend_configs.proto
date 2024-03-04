@@ -260,4 +260,6 @@ message GpuBackendConfig {
 
     CudnnfMHABackendConfig cudnn_fmha_backend_config = 9;
   }
+
+  bool should_force_delay = 10;
 }

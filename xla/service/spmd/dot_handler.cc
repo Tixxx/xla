@@ -1544,7 +1544,12 @@ StatusOr<HloInstruction*> EmitWindowedDotGeneral(
               .collective_ops_creator.create_cross_partition_collective_permute(
                   &body_b, o, output_sd_pairs,
                   (*lhs.state().next_channel_id)++);
-
+      if (use_multi_streamed_dots) {
+        TF_ASSIGN_OR_RETURN(gpu::GpuBackendConfig backend_config,
+        o->backend_config<gpu::GpuBackendConfig>());
+        backend_config.set_should_force_delay(true);
+        TF_RETURN_IF_ERROR(o->set_backend_config(backend_config));
+      }
       TF_ASSIGN_OR_RETURN(
           extra_inout, get_partial_unid_result(l, r, extra_inout, i, queue_id));
 
@@ -1564,7 +1569,7 @@ StatusOr<HloInstruction*> EmitWindowedDotGeneral(
           body_b.AddInstruction(HloInstruction::CreateConstant(
               LiteralUtil::CreateR0<uint32_t>(1)))));
 
-      TF_ASSIGN_OR_RETURN(o, get_partial_unid_result(l, r, o, real_i));
+      TF_ASSIGN_OR_RETURN(o, get_partial_unid_result(l, r, o, real_i, ++queue_id));
       body_b.AddInstruction(
           HloInstruction::CreateTuple({l, r, o, extra_inout, i}));
     } else {
@@ -1584,12 +1589,25 @@ StatusOr<HloInstruction*> EmitWindowedDotGeneral(
               .collective_ops_creator.create_cross_partition_collective_permute(
                   &body_b, cp_input, sd_pairs,
                   (*lhs.state().next_channel_id)++);
+      if (use_multi_streamed_dots) {
+        TF_ASSIGN_OR_RETURN(gpu::GpuBackendConfig backend_config,
+        cp_output->backend_config<gpu::GpuBackendConfig>());
+        backend_config.set_should_force_delay(true);
+        TF_RETURN_IF_ERROR(cp_output->set_backend_config(backend_config));
+      }
+
       if (windowed_op_is_lhs) {
         next_l = cp_output;
       } else {
         next_r = cp_output;
       }
       TF_ASSIGN_OR_RETURN(o, get_partial_unid_result(l, r, o, i, queue_id));
+      if (use_multi_streamed_dots) {
+        TF_ASSIGN_OR_RETURN(gpu::GpuBackendConfig backend_config,
+        o->operand(1)->backend_config<gpu::GpuBackendConfig>());
+        backend_config.set_should_force_delay(true);
+        TF_RETURN_IF_ERROR(o->mutable_operand(1)->set_backend_config(backend_config));
+      }
 
       // ++i
       i = body_b.AddInstruction(HloInstruction::CreateBinary(
