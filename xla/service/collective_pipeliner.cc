@@ -522,8 +522,8 @@ std::optional<std::vector<HloInstruction*>> CollectIndependentOperandChain(
       bool add_loop_invariant_op_in_chain =
           (should_add_loop_invariant_op_in_chain &&
            loop_invariant_instructions.contains(chain_instr));
-      if ((!loop_invariant_params.contains(chain_instr) && !is_scalar_shaped &&
-           allow_loop_variant_parameter_in_chain) &&
+      if (!loop_invariant_params.contains(chain_instr) && !is_scalar_shaped &&
+           allow_loop_variant_parameter_in_chain &&
           !add_loop_invariant_op_in_chain) {
         return std::nullopt;
       }
@@ -741,7 +741,7 @@ int64_t WhileLoopAnalysis::GetDUSIndex(const HloInstruction* dus) const {
 void WhileLoopAnalysis::ExtractLoopInvariantOps() {
   for (HloInstruction* inst :
        while_->while_body()->MakeInstructionPostOrder()) {
-    if (inst->opcode() == HloOpcode::kConstant) {
+    if (inst->IsConstant()) {
       invariant_loop_instructions_.insert(inst);
       continue;
     }
