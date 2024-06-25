@@ -253,6 +253,55 @@ ENTRY %test {
   rotate = op::Concatenate(op::CollectivePermute(op::Slice()), op::Slice());
   EXPECT_THAT(root, AllOf(rotate, op::Shape("f32[3]")));
 }
+
+TEST_F(StatefulRngSpmdPartitionerTest,
+       ExpectCMForBothAg) {
+  absl::string_view hlo_string = R"(
+HloModule test, entry_computation_layout={(bf16[8,2048,12288]{2,1,0}, bf16[1,12288,49152]{2,1,0}, bf16[8,2048,12288]{2,1,0}, bf16[1,12288,96,128]{3,2,1,0})->(bf16[8,2048,49152]{2,1,0}, bf16[8,2048,96,128]{3,2,1,0})}, num_partitions=8
+
+ENTRY main {
+  Arg_0.1 = bf16[8,2048,12288]{2,1,0} parameter(0), sharding={devices=[2,1,4]<=[8]}
+  Arg_1.2 = bf16[1,12288,49152]{2,1,0} parameter(1), sharding={devices=[1,1,4,2]<=[2,4]T(1,0) last_tile_dim_replicate}
+  copy.32 = bf16[8,2048,12288]{2,1,0} copy(Arg_0.1), sharding={devices=[2,1,4]<=[8]}
+  reshape.989 = bf16[12288,49152]{1,0} reshape(Arg_1.2), sharding={devices=[1,4,2]<=[2,4]T(1,0) last_tile_dim_replicate}
+  dot.18 = bf16[8,2048,49152]{2,1,0} dot(copy.32, reshape.989), lhs_contracting_dims={2}, rhs_contracting_dims={0}, sharding={devices=[2,1,4]<=[8]}
+
+  Arg_0.3 = bf16[8,2048,12288]{2,1,0} parameter(2), sharding={devices=[2,1,4]<=[8]}
+  Arg_1.4 = bf16[1,12288,96,128]{3,2,1,0} parameter(3), sharding={devices=[1,1,4,1,2]<=[2,4]T(1,0) last_tile_dim_replicate}
+
+  copy.2 = bf16[8,2048,12288]{2,1,0} copy(Arg_0.3), sharding={devices=[2,1,4]<=[8]}
+  reshape.2833 = bf16[12288,96,128]{2,1,0} reshape(Arg_1.4), sharding={devices=[1,4,1,2]<=[2,4]T(1,0) last_tile_dim_replicate}
+  dot.6 = bf16[8,2048,96,128]{3,2,1,0} dot(copy.2, reshape.2833), lhs_contracting_dims={2}, rhs_contracting_dims={0}, sharding={devices=[2,1,4,1]<=[8]}
+
+  copy.31 = bf16[8,2048,49152]{2,1,0} copy(dot.18), sharding={devices=[2,1,4]<=[8]}
+  ROOT tuple.0 = (bf16[8,2048,49152]{2,1,0}, bf16[8,2048,96,128]{3,2,1,0}) tuple(copy.31, dot.6)
+}
+
+)";
+  // With disable_ag_rewrite_for_multiple_consumers set to true, we expect only
+  // 1 while loop to exist which is the rewritten windowed einsum loop for the
+  // first ag->dot pattern. The second dot which shares the same operand with
+  // the loop will remain as is.
+  DebugOptions debug_options = GetDefaultDebugOptions();
+  debug_options.set_xla_gpu_threshold_for_windowed_einsum_mib(0);
+  debug_options.set_xla_gpu_multi_streamed_windowed_einsum(true);
+  TF_ASSERT_OK_AND_ASSIGN(
+      auto module,
+      PartitionComputation(hlo_string, /*num_partitions=*/8, debug_options,
+                           /*add_passes=*/nullptr,
+                           /*skip_checking_windowed_einsum_users=*/true,
+                           /*disable_ag_rewrite_for_multiple_consumers=*/true));
+  XLA_VLOG_LINES(1, module->ToString());
+  // we expect 2 while loops representing collective matmuls.
+  int64_t loop_count = 0;
+  for(auto inst : module->entry_computation()->MakeInstructionPostOrder()) {
+    if(inst->opcode() == HloOpcode::kWhile) {
+      loop_count++;
+    }
+  }
+  EXPECT_EQ(loop_count, 2);
+}
+
 }  // namespace
 }  // namespace spmd
 }  // namespace xla
