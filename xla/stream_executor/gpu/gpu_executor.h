@@ -202,6 +202,9 @@ class GpuExecutor : public StreamExecutorCommon {
 
   bool HostCallback(Stream* stream,
                     absl::AnyInvocable<absl::Status() &&> callback) override;
+  bool HostMemoryRegister(void* location, uint64_t size) override;
+
+  bool HostMemoryUnregister(void* location) override;
 
   void DeallocateStream(Stream* stream) override;
 

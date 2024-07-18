@@ -539,7 +539,19 @@ void GpuExecutor::Deallocate(DeviceMemoryBase* mem) {
 bool GpuExecutor::SynchronizeAllActivity() {
   return GpuDriver::SynchronizeContext(context_);
 }
+bool GpuExecutor::HostMemoryRegister(void* location, uint64_t size) {
+  VLOG(1) << "Called StreamExecutor::HostMemoryRegister(data=" << location
+          << ")";
 
+  return GpuDriver::HostRegister(context_, location, size);
+}
+
+bool GpuExecutor::HostMemoryUnregister(void* location) {
+  VLOG(1) << "Called StreamExecutor::HostUnregister(data=" << location
+          << ")";
+
+  return GpuDriver::HostUnregister(context_, location);
+}
 absl::Status GpuExecutor::SynchronousMemZero(DeviceMemoryBase* location,
                                              uint64_t size) {
   if (reinterpret_cast<uintptr_t>(location->opaque()) % 4 == 0 &&

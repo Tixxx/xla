@@ -130,19 +130,64 @@ NcclCollectivePermuteStartThunk::NcclCollectivePermuteStartThunk(
       .value();
 }
 
+// absl::Status NcclCollectivePermuteStartThunk::Initialize(
+//     const InitializeParams& params) {
+//   TF_RETURN_IF_ERROR(NcclCollectiveThunk::Initialize(params));
+//   if (p2p_memcpy_enabled_) {
+//     TF_ASSIGN_OR_RETURN(const int64_t current_id,
+//                         GetCurrentId(params.collective_params, config_));
+
+//     TF_RETURN_IF_ERROR(recv_ptr_map_.InitializeId(current_id));
+//   }
+
+//   return absl::OkStatus();
+// }
+
 absl::Status NcclCollectivePermuteStartThunk::Initialize(
     const InitializeParams& params) {
   TF_RETURN_IF_ERROR(NcclCollectiveThunk::Initialize(params));
   if (p2p_memcpy_enabled_) {
     TF_ASSIGN_OR_RETURN(const int64_t current_id,
                         GetCurrentId(params.collective_params, config_));
+    if (send_value_map_.find(current_id) == send_value_map_.end()) {
+      if (!params.stream->parent()->HostMemoryRegister(
+              &send_value_map_[current_id], sizeof(void*))) {
+        VLOG(5) << "Registering host send pointer for memcpy failed.";
+      }
+    }
 
-    TF_RETURN_IF_ERROR(recv_ptr_map_.InitializeId(current_id));
+    if (recv_value_map_.find(current_id) == recv_value_map_.end()) {
+      if (!params.stream->parent()->HostMemoryRegister(
+              &recv_value_map_[current_id], sizeof(void*))) {
+        VLOG(5) << "Registering host recv pointer for memcpy failed.";
+      }
+    }
   }
 
   return absl::OkStatus();
 }
 
+absl::Status NcclCollectivePermuteStartThunk::Cleanup(
+    const CleanupParams& params) {
+  if (p2p_memcpy_enabled_) {
+    TF_ASSIGN_OR_RETURN(const int64_t current_id,
+                        GetCurrentId(params.collective_params, config_));
+    if (send_value_map_.find(current_id) == send_value_map_.end()) {
+      if (!params.executor->HostMemoryUnregister(
+              &send_value_map_[current_id])) {
+        VLOG(5) << "Unregistering host send pointer for memcpy failed.";
+      }
+    }
+
+    if (recv_value_map_.find(current_id) == recv_value_map_.end()) {
+      if (!params.executor->HostMemoryUnregister(
+              &recv_value_map_[current_id])) {
+        VLOG(5) << "Unregistering host recv pointer for memcpy failed.";
+      }
+    }
+  }
+  return absl::OkStatus();
+}
 absl::Status NcclCollectivePermuteStartThunk::RunNcclCollective(
     const ExecuteParams& params, se::Stream& stream,
     NcclCommHandleWrapper comm_wrapper) {
@@ -158,21 +203,37 @@ absl::Status NcclCollectivePermuteStartThunk::RunNcclCollective(
   const NcclP2PConfig::SourceTargetMapEntry source_target =
       NcclP2PConfig::GetSourceTarget(config_.id_to_source_target, current_id);
 
-  bool use_memcpy = comm_wrapper.is_local &&
-                    recv_ptr_map_.IsInitialized(current_id) &&
+  // bool use_memcpy = recv_ptr_map_.IsInitialized(current_id) &&
+  //                   p2p_memcpy_enabled_;
+  bool use_memcpy = recv_value_map_.find(current_id) != recv_value_map_.end() &&
+                    send_value_map_.find(current_id) != send_value_map_.end() &&
                     p2p_memcpy_enabled_;
+  VLOG(5) << "#####p2p_memcpy_enabled_: " << p2p_memcpy_enabled_;
+  VLOG(5) << "###current_id: " << current_id;
+  VLOG(5) << "###send_value_: " << (void*)send_value_map_[current_id];
+  VLOG(5) << "###recv_value_: " << (void*)recv_value_map_[current_id];
 
+  // return ::xla::gpu::RunCollectivePermute(
+  //     nccl_api(), source_target, device_buffers[0], stream,
+  //     comm_wrapper.comm_handle, device_string, current_id, use_memcpy,
+  //     recv_ptr_map_);
   return ::xla::gpu::RunCollectivePermute(
-      nccl_api(), source_target, device_buffers[0], stream,
-      comm_wrapper.comm_handle, device_string, current_id, use_memcpy,
-      recv_ptr_map_);
+      nccl_api(), source_target, device_buffers[0], stream, comm_wrapper.comm_handle, device_string,
+      current_id, use_memcpy, send_value_map_[current_id],
+      recv_value_map_[current_id]);
 }
 
+// absl::Status RunCollectivePermute(
+//     NcclApi* nccl_api, NcclP2PConfig::SourceTargetMapEntry source_target,
+//     DeviceBufferPair& buffer, se::Stream& stream, NcclApi::NcclCommHandle comm,
+//     absl::string_view device_string, int64_t current_id, bool use_memcpy,
+//     NcclCollectivePermuteStartThunk::RecvPtrMap& recv_ptr_map) {
 absl::Status RunCollectivePermute(
     NcclApi* nccl_api, NcclP2PConfig::SourceTargetMapEntry source_target,
     DeviceBufferPair& buffer, se::Stream& stream, NcclApi::NcclCommHandle comm,
     absl::string_view device_string, int64_t current_id, bool use_memcpy,
-    NcclCollectivePermuteStartThunk::RecvPtrMap& recv_ptr_map) {
+    uint64_t& send_ptr_value, uint64_t& recv_ptr_value) {
+
   // Determine the source and target IDs for this instance. The source ID is the
   // ID which will copy its data to this instance. The destination ID is the ID
   // to which this instance will copy its data. Either are optional.
@@ -213,22 +274,56 @@ absl::Status RunCollectivePermute(
                                 device_string, current_id,
                                 source_id.value_or(-1), target_id.value_or(-1));
 
+  // If sending to another peer, get the pointer value of the src addr.
+  // Only change the pointer value when it's different from stored one.
+  if (source_id && send_ptr_value != (uint64_t)dest_addr.opaque()) {
+    send_ptr_value = (uint64_t)dest_addr.opaque();
+    VLOG(5) << "###send_ptr_value changed: " << (void*)send_ptr_value;
+  }
+  const bool is_nccl_group_needed = (target_id && source_id);
+  if (is_nccl_group_needed) {
+    TF_RETURN_IF_ERROR(nccl_api->GroupStart());
+  }
+
   // If all peers are local, only get/send device pointer values and invoke
   // memcpy.
   if (use_memcpy) {
-    // If sending to another peer, get the pointer value of the src addr.
-    // Only change the pointer value when it's different from stored one.
-    if (source_id) {
+    // // If sending to another peer, get the pointer value of the src addr.
+    // // Only change the pointer value when it's different from stored one.
+    // if (source_id) {
+    //   TF_RETURN_IF_ERROR(
+    //       recv_ptr_map.PutRecvPtr(current_id, dest_addr.opaque()));
+    // }
+    // Send source buffer to target peer if needed.
+    // if (target_id) {
+    //   LOG(ERROR) << "sending to target_id: " << *target_id << " send_ptr_value : " << (void*)send_ptr_value;
+
+    //   TF_RETURN_IF_ERROR(
+    //       nccl_api->SendPtrToPeer(&send_ptr_value, *target_id, comm, &stream));
+    // }
+
+    // // Receive data from the source peer to the destination buffer.
+    // if (source_id) {
+    //   TF_RETURN_IF_ERROR(nccl_api->RecvPtrFromPeer(&recv_ptr_value, *source_id,
+    //                                                comm, &stream));
+    // }
+    if (target_id) {
+
       TF_RETURN_IF_ERROR(
-          recv_ptr_map.PutRecvPtr(current_id, dest_addr.opaque()));
+          nccl_api->RecvPtrFromPeer(&recv_ptr_value, *target_id, comm, &stream));
     }
+
+    // Receive data from the source peer to the destination buffer.
+    if (source_id) {
+      VLOG(3) << "sending to source_id: " << *source_id << " send_ptr_value : " << (void*)send_ptr_value;
+
+      TF_RETURN_IF_ERROR(nccl_api->SendPtrToPeer(&send_ptr_value, *source_id,
+                                                   comm, &stream));
+    }
+
   } else {
     // GroupStart/End API is needed only if we will issue both send & recv
     // calls.
-    const bool is_nccl_group_needed = (target_id && source_id);
-    if (is_nccl_group_needed) {
-      TF_RETURN_IF_ERROR(nccl_api->GroupStart());
-    }
     // Send source buffer to target peer if needed.
     if (target_id) {
       TF_RETURN_IF_ERROR(nccl_api->Send(src_addr, buffer.element_type,
@@ -242,9 +337,6 @@ absl::Status RunCollectivePermute(
                                         buffer.element_count, *source_id, comm,
                                         &stream));
     }
-    if (is_nccl_group_needed) {
-      TF_RETURN_IF_ERROR(nccl_api->GroupEnd());
-    }
   }
 
   if (!source_id) {
@@ -254,18 +346,28 @@ absl::Status RunCollectivePermute(
                                   device_string);
     TF_RETURN_IF_ERROR(stream.MemZero(&dest_addr, dest_addr.size()));
   }
+  if (is_nccl_group_needed) {
+    TF_RETURN_IF_ERROR(nccl_api->GroupEnd());
+  }
+
   if (use_memcpy && target_id) {
-    TF_ASSIGN_OR_RETURN(auto recv_ptr, recv_ptr_map.GetRecvPtr(*target_id));
-    if (recv_ptr.IsUnavailable()) {
-      // TODO make BlockUntilReady support AsyncValueRef directly.
-      BlockUntilReady(recv_ptr.GetAsyncValue());
-    }
+    // TF_ASSIGN_OR_RETURN(auto recv_ptr, recv_ptr_map.GetRecvPtr(*target_id));
+    // if (recv_ptr.IsUnavailable()) {
+    //   // TODO make BlockUntilReady support AsyncValueRef directly.
+    //   BlockUntilReady(recv_ptr.GetAsyncValue());
+    // }
 
-    VLOG(3) << "Using memcpy, received target pointer: " << recv_ptr.get()
-            << " current_id " << current_id << " target_id: " << *target_id;
+    // VLOG(3) << "Using memcpy, received target pointer: " << recv_ptr.get()
+    //         << " current_id " << current_id << " target_id: " << *target_id;
 
-    VLOG(3) << current_id << " initiating memcpy to " << *target_id;
-    se::DeviceMemoryBase dst_addr = se::DeviceMemoryBase(recv_ptr.get());
+    // VLOG(3) << current_id << " initiating memcpy to " << *target_id;
+    // se::DeviceMemoryBase dst_addr = se::DeviceMemoryBase(recv_ptr.get());
+    // TF_RETURN_IF_ERROR(stream.MemcpyD2D(&dst_addr, src_addr, src_addr.size()));
+      // Need to block until the receive pointer buffer has been updated.
+    TF_RETURN_IF_ERROR(stream.BlockHostUntilDone());
+
+    VLOG(3) << current_id << " initiating memcpy to " << *target_id << " with recv pointer value: " << (void*)recv_ptr_value;
+    se::DeviceMemoryBase dst_addr = se::DeviceMemoryBase((void*)recv_ptr_value);
     TF_RETURN_IF_ERROR(stream.MemcpyD2D(&dst_addr, src_addr, src_addr.size()));
   }
 

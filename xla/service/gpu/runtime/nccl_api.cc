@@ -330,11 +330,13 @@ class DefaultNcclApi final : public NcclApi {
   absl::Status Send(se::DeviceMemoryBase send_buffer, PrimitiveType dtype,
                     size_t count, int32_t peer, NcclCommHandle comm,
                     se::Stream* stream) final;
-
+  absl::Status SendPtrToPeer(void* ptr, int32_t peer, NcclCommHandle comm,
+                             se::Stream* stream) final;
   absl::Status Recv(se::DeviceMemoryBase recv_buffer, PrimitiveType dtype,
                     size_t count, int32_t peer, NcclCommHandle comm,
                     se::Stream* stream) final;
-
+ absl::Status RecvPtrFromPeer(void* ptr, int32_t peer, NcclCommHandle comm,
+                               se::Stream* stream) final;
   absl::StatusOr<NcclRegisteredBufferHandle> RegisterBuffer(
       NcclCommHandle comm, se::DeviceMemoryBase buffer) final;
 
@@ -607,7 +609,16 @@ absl::Status DefaultNcclApi::Send(se::DeviceMemoryBase send_buffer,
       ncclSend(send_buffer.opaque(), ToNcclCount(dtype, count), nccl_dtype,
                peer, Cast(comm), se::gpu::AsGpuStreamValue(stream)));
 }
-
+absl::Status DefaultNcclApi::SendPtrToPeer(void* ptr, int32_t peer,
+                                           NcclCommHandle comm,
+                                           se::Stream* stream) {
+  VLOG(3) << absl::StreamFormat(
+      "Launch NCCL RecvPtrFromPeer operation on device #%d;  "
+      "peer=%d; comm=%p; stream=%p",
+      stream->parent()->device_ordinal(), peer, comm, stream);
+  return XLA_NCCL_STATUS(ncclSend(ptr, 1, ncclUint64, peer, Cast(comm),
+                                  se::gpu::AsGpuStreamValue(stream)));
+}
 absl::Status DefaultNcclApi::Recv(se::DeviceMemoryBase recv_buffer,
                                   PrimitiveType dtype, size_t count,
                                   int32_t peer, NcclCommHandle comm,
@@ -624,6 +635,17 @@ absl::Status DefaultNcclApi::Recv(se::DeviceMemoryBase recv_buffer,
   return XLA_NCCL_STATUS(
       ncclRecv(recv_buffer.opaque(), ToNcclCount(dtype, count), nccl_dtype,
                peer, Cast(comm), se::gpu::AsGpuStreamValue(stream)));
+}
+absl::Status DefaultNcclApi::RecvPtrFromPeer(void* ptr, int32_t peer,
+                                             NcclCommHandle comm,
+                                             se::Stream* stream) {
+  VLOG(3) << absl::StreamFormat(
+      "Launch NCCL RecvPtrFromPeer operation on device #%d; "
+      "peer=%d; comm=%p; stream=%p",
+      stream->parent()->device_ordinal(), peer, comm, stream);
+
+  return XLA_NCCL_STATUS(ncclRecv(ptr, 1, ncclUint64, peer, Cast(comm),
+                                  se::gpu::AsGpuStreamValue(stream)));
 }
 
 absl::StatusOr<NcclApi::NcclRegisteredBufferHandle>
