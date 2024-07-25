@@ -765,7 +765,11 @@ absl::Status RunOptimizationPasses(
     pipeline.AddPass<DotDecomposer>();
     // Only merge "smallish" dots.  This threshold was not set carefully, but
     // so far we know that 1mb is too small.
-    pipeline.AddPass<DotMerger>(/*max_size_to_merge=*/int64_t{32} << 20);
+    std::function<bool(const HloInstruction* a, const HloInstruction* b)> is_compatible = [&](const HloInstruction* a, const HloInstruction* b) -> bool {
+      return a->backend_config<GpuBackendConfig>()->operation_queue_id() == b->backend_config<GpuBackendConfig>()->operation_queue_id();
+      };
+
+    pipeline.AddPass<DotMerger>(/*max_size_to_merge=*/int64_t{32} << 20, is_compatible);
     pipeline.AddPass<SortSimplifier>();
     pipeline.AddPass<TupleSimplifier>();
     pipeline.AddPass<WhileLoopConstantSinking>();

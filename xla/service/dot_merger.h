@@ -56,8 +56,9 @@ namespace xla {
 // operands to be concatenated.
 class DotMerger : public HloModulePass {
  public:
-  explicit DotMerger(int64_t max_size_to_merge)
-      : max_size_to_merge_(max_size_to_merge) {}
+  explicit DotMerger(int64_t max_size_to_merge,
+  std::function<bool(const HloInstruction* a, const HloInstruction* b)> is_compatible = [](const HloInstruction* a, const HloInstruction* b) -> bool { return true;})
+      : max_size_to_merge_(max_size_to_merge), is_compatible_(is_compatible) {}
 
   absl::string_view name() const override { return "dot-merger"; }
   using HloPassInterface::Run;
@@ -67,6 +68,7 @@ class DotMerger : public HloModulePass {
 
  private:
   int64_t max_size_to_merge_;
+  std::function<bool(const HloInstruction* a, const HloInstruction* b)> is_compatible_;
 };
 
 }  // namespace xla
