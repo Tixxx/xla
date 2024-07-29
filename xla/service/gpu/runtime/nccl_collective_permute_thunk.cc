@@ -205,13 +205,9 @@ absl::Status NcclCollectivePermuteStartThunk::RunNcclCollective(
 
   // bool use_memcpy = recv_ptr_map_.IsInitialized(current_id) &&
   //                   p2p_memcpy_enabled_;
-  bool use_memcpy = recv_value_map_.find(current_id) != recv_value_map_.end() &&
+  bool use_memcpy = comm_wrapper.is_local && recv_value_map_.find(current_id) != recv_value_map_.end() &&
                     send_value_map_.find(current_id) != send_value_map_.end() &&
                     p2p_memcpy_enabled_;
-  VLOG(5) << "#####p2p_memcpy_enabled_: " << p2p_memcpy_enabled_;
-  VLOG(5) << "###current_id: " << current_id;
-  VLOG(5) << "###send_value_: " << (void*)send_value_map_[current_id];
-  VLOG(5) << "###recv_value_: " << (void*)recv_value_map_[current_id];
 
   // return ::xla::gpu::RunCollectivePermute(
   //     nccl_api(), source_target, device_buffers[0], stream,
