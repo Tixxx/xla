@@ -205,6 +205,8 @@ absl::Status NcclCollectivePermuteStartThunk::RunNcclCollective(
 
   // bool use_memcpy = recv_ptr_map_.IsInitialized(current_id) &&
   //                   p2p_memcpy_enabled_;
+  VLOG(5) << "Is local communicator : " << (comm_wrapper.is_local ? "true" : "false");
+
   bool use_memcpy = comm_wrapper.is_local && recv_value_map_.find(current_id) != recv_value_map_.end() &&
                     send_value_map_.find(current_id) != send_value_map_.end() &&
                     p2p_memcpy_enabled_;

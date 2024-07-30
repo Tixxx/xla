@@ -284,6 +284,9 @@ class ResourceRequests : public Thunk::ResourceRequests {
       }
 
       bool is_local = r.key.devices().size() == r.num_local_participants;
+      VLOG(2) << "r.key.devices().size(): " << r.key.devices().size()
+        << ". r.num_local_participants: " << r.num_local_participants;
+
       TF_ASSIGN_OR_RETURN(
           const NcclCliqueIdCallback* clique_id_callback,
           GetNcclCliqueIdCallback(params.nccl_clique_id_callback, is_local));
