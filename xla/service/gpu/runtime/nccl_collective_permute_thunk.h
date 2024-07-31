@@ -113,6 +113,7 @@ class NcclCollectivePermuteStartThunk : public NcclCollectiveThunk {
   bool p2p_memcpy_enabled_ = false;
   std::unordered_map<int64_t, uint64_t> send_value_map_;
   std::unordered_map<int64_t, uint64_t> recv_value_map_;
+  int64_t device_count_;
 };
 
 // absl::Status RunCollectivePermute(
