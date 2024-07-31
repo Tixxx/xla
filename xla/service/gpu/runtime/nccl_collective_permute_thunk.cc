@@ -53,6 +53,18 @@ absl::StatusOr<const int64_t> GetCurrentId(
           : current_logical_id.computation_id;
   return current_id;
 }
+
+bool IsLocalPeer(const NcclP2PConfig::SourceTargetMapEntry& source_target, se::Stream& stream, const int64_t current_id) {
+  int64_t device_count = stream.parent()->GetDeviceCount();
+  VLOG(5) << "Local device count: " << device_count;
+  const std::optional<int64_t> source_id = source_target.source;
+  const std::optional<int64_t> target_id = source_target.target;
+  if (source_id == std::nullopt && target_id == std::nullopt) {
+    return false;
+  }
+  int64_t peer_id = source_id == std::nullopt ? *target_id : *source_id;
+  return (current_id / device_count) == (peer_id / device_count);
+}
 }  // namespace
 
 NcclCollectivePermuteStartThunk::NcclCollectivePermuteStartThunk(
@@ -205,9 +217,12 @@ absl::Status NcclCollectivePermuteStartThunk::RunNcclCollective(
 
   // bool use_memcpy = recv_ptr_map_.IsInitialized(current_id) &&
   //                   p2p_memcpy_enabled_;
-  VLOG(5) << "Is local communicator : " << (comm_wrapper.is_local ? "true" : "false");
 
-  bool use_memcpy = comm_wrapper.is_local && recv_value_map_.find(current_id) != recv_value_map_.end() &&
+  bool is_local_peer = IsLocalPeer(source_target, stream, current_id);
+  VLOG(5) << "Is local communicator : " << (comm_wrapper.is_local ? "true" : "false");
+  VLOG(5) << "Is local peer : " << (is_local_peer ? "true" : "false");
+
+  bool use_memcpy = (comm_wrapper.is_local || is_local_peer) && recv_value_map_.find(current_id) != recv_value_map_.end() &&
                     send_value_map_.find(current_id) != send_value_map_.end() &&
                     p2p_memcpy_enabled_;
 
