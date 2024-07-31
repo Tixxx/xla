@@ -54,14 +54,25 @@ absl::StatusOr<const int64_t> GetCurrentId(
   return current_id;
 }
 
-bool IsLocalPeer(const NcclP2PConfig::SourceTargetMapEntry& source_target, se::Stream& stream, const int64_t current_id, const int64_t device_count) {
+bool IsLocalPeerTransfer(const NcclP2PConfig::SourceTargetMapEntry& source_target, se::Stream& stream, const int64_t current_id, const int64_t device_count) {
   const std::optional<int64_t> source_id = source_target.source;
   const std::optional<int64_t> target_id = source_target.target;
-  if (source_id == std::nullopt && target_id == std::nullopt) {
-    return false;
+  // Since mixing nccl p2p with p2p memcopy will cause random deadlocks.
+  // We determine if it's a local peer by the following conditions:
+  // 1. Both source and target IDs are present and they are within a node
+  // 2. Source ID is present, but target ID is not.
+  // 3. Target ID is presetn, but source ID is not.
+  int64_t host_id = (current_id / device_count);
+  if(source_id && target_id) {
+    return (host_id == (*source_id / device_count)) && (host_id == (*target_id / device_count)); 
   }
-  int64_t peer_id = source_id == std::nullopt ? *target_id : *source_id;
-  return (current_id / device_count) == (peer_id / device_count);
+  if (source_id) {
+    return (host_id == (*source_id / device_count));
+  }
+  if (target_id) {
+    return (host_id == (*target_id / device_count));
+  }
+  return false;
 }
 }  // namespace
 
@@ -219,7 +230,7 @@ absl::Status NcclCollectivePermuteStartThunk::RunNcclCollective(
   // bool use_memcpy = recv_ptr_map_.IsInitialized(current_id) &&
   //                   p2p_memcpy_enabled_;
 
-  bool is_local_peer = IsLocalPeer(source_target, stream, current_id, device_count_);
+  bool is_local_peer = IsLocalPeerTransfer(source_target, stream, current_id, device_count_);
   VLOG(5) << "Is local communicator : " << (comm_wrapper.is_local ? "true" : "false");
   VLOG(5) << "Is local peer : " << (is_local_peer ? "true" : "false");
 
