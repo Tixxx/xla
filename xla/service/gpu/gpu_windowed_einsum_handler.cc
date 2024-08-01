@@ -540,21 +540,27 @@ bool ShouldAddToChain(const HloInstruction* inst) {
 }
 absl::Status PostProcessUnrolledLoop(HloInstruction* loop, int64_t stream_id) {
   HloComputation* while_body = loop->while_body();
-  if(while_body->name().find(
-          GpuWindowedEinsumHandler::kWindowedEinsumRsLoopName) != std::string::npos) {
+  if (while_body->name().find(
+          GpuWindowedEinsumHandler::kWindowedEinsumRsLoopName) !=
+      std::string::npos) {
     // Find the 3rd tuple output of while loop
     int64_t tuple_index_has_cp = 2;
-    auto it = absl::c_find_if(loop->users(), [&](HloInstruction* i) { return i->tuple_index() == tuple_index_has_cp; });
+    auto it = absl::c_find_if(loop->users(), [&](HloInstruction* i) {
+      return i->tuple_index() == tuple_index_has_cp;
+    });
     CHECK(it != loop->users().end());
     HloInstruction* gte_2 = *it;
     CHECK(gte_2->users().size() == 1);
-    if(gte_2->users()[0]->opcode() == HloOpcode::kCollectivePermute) {
+    if (gte_2->users()[0]->opcode() == HloOpcode::kCollectivePermute) {
       // Pull the collective permute into the while loop
       HloInstruction* while_root = while_body->root_instruction();
-      HloInstruction* new_cp = while_body->AddInstruction(gte_2->users()[0]->Clone());
-      HloInstruction* original_tuple_operand = while_root->mutable_operand(tuple_index_has_cp);
+      HloInstruction* new_cp =
+          while_body->AddInstruction(gte_2->users()[0]->Clone());
+      HloInstruction* original_tuple_operand =
+          while_root->mutable_operand(tuple_index_has_cp);
       TF_RETURN_IF_ERROR(new_cp->ReplaceOperandWith(0, original_tuple_operand));
-      TF_RETURN_IF_ERROR(while_root->ReplaceOperandWith(tuple_index_has_cp, new_cp));
+      TF_RETURN_IF_ERROR(
+          while_root->ReplaceOperandWith(tuple_index_has_cp, new_cp));
       TF_RETURN_IF_ERROR(gte_2->users()[0]->ReplaceAllUsesWith(gte_2));
       TF_RETURN_IF_ERROR(gte_2->parent()->RemoveInstruction(gte_2->users()[0]));
     }
@@ -754,138 +760,144 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
         }
       }
     }
-    // Rewrites an all-to-all+gemm into multiple independent partial a2a+gemms
-    // to minimize communication overhead. To do this, the original input will
-    // be sliced into replica_group size and perform all-to-all+gemm.
-    HloInstruction* lhs;
-    HloInstruction* rhs;
-    std::vector<xla::ReplicaGroup> replica_groups;
-    TF_ASSIGN_OR_RETURN(bool matched,
-                        MatchA2aGemmWithIntermediateReshapes(dot, &lhs, &rhs));
-    if (matched) {
-      replica_groups = lhs->replica_groups();
-      // We split the a2a+gemm along the contracting dimension into multiple
-      // a2a+gemms and perform partial dots, partial results are added to the
-      // final output buffer.
-      int64_t group_size = replica_groups[0].replica_ids_size();
-      if (absl::c_find_if(replica_groups, [&](ReplicaGroup& group) {
-            return group.replica_ids_size() != group_size;
-          }) != replica_groups.end()) {
-        VLOG(5) << "All-to-all split groups don't have the same number of "
-                   "replicas.";
-        return absl::OkStatus();
-      }
-
-      // Get the dimension to slice for lhs and rhs, we slice on the contracting
-      // dimensions to calculate partial results
-      const DotDimensionNumbers& original_dot_dnums =
-          dot->dot_dimension_numbers();
-      const PrecisionConfig& original_precision = dot->precision_config();
-      const auto& lhs_contracting_dims =
-          dot->dot_dimension_numbers().lhs_contracting_dimensions();
-      const auto& rhs_contracting_dims =
-          dot->dot_dimension_numbers().rhs_contracting_dimensions();
-
-      if (lhs_contracting_dims.size() != 1 ||
-          rhs_contracting_dims.size() != 1) {
-        VLOG(5) << "Contracting dimensions have multiple elements, all-to-all "
-                   "sharding will be skipped.";
-        return absl::OkStatus();
-      }
-      int64_t lhs_contracting_dim = lhs_contracting_dims[0];
-      int64_t rhs_contracting_dim = rhs_contracting_dims[0];
-      HloAllToAllInstruction* a2a = DynCast<HloAllToAllInstruction>(lhs);
-      int64_t contracting_dim_value =
-          rhs->shape().dimensions()[rhs_contracting_dim];
-
-      // Each split is sliced out of the input buffer, we need to determine the
-      // slice sizes and increments.
-      std::vector<int64_t> lhs_slice_sizes(a2a->shape().rank(), 0);
-      std::vector<int64_t> lhs_slice_increments(a2a->shape().rank(), 1);
-      std::vector<int64_t> lhs_slice_max_range(
-          a2a->shape().dimensions().begin(), a2a->shape().dimensions().end());
-
-      std::vector<int64_t> rhs_slice_sizes(rhs->shape().rank(), 0);
-      std::vector<int64_t> rhs_slice_increments(rhs->shape().rank(), 1);
-      std::vector<int64_t> rhs_slice_max_range(
-          rhs->shape().dimensions().begin(), rhs->shape().dimensions().end());
-
-      // Create a zero-valued buffer to hold output.
-      HloInstruction* output_buffer =
-          comp->AddInstruction(HloInstruction::CreateBroadcast(
-              dot->shape(),
-              comp->AddInstruction(HloInstruction::CreateConstant(
-                  LiteralUtil::Zero(dot->shape().element_type()))),
-              {}));
-      HloInstruction* a2a_operand = a2a->mutable_operand(0);
-      if (contracting_dim_value % group_size) {
-        VLOG(5) << absl::StrFormat(
-            "Contracting dimension %d needs to be divisible by group_size %d",
-            contracting_dim_value, group_size);
-        return absl::OkStatus();
-      }
-      int64_t size_per_split = contracting_dim_value / group_size;
-
-      // Each split is sliced out of the input buffer, we need to determine the
-      // slice sizes and increments.
-      lhs_slice_max_range[lhs_contracting_dim] = size_per_split;
-      rhs_slice_max_range[rhs_contracting_dim] = size_per_split;
-
-      Shape lhs_slice_shape = a2a->shape();
-      Shape rhs_slice_shape = rhs->shape();
-
-      lhs_slice_shape.set_dimensions(lhs_contracting_dim, size_per_split);
-      rhs_slice_shape.set_dimensions(rhs_contracting_dim, size_per_split);
-
-      HloInstruction* lhs_slice;
-      HloInstruction* rhs_slice;
-
-      HloInstruction* partial_result = output_buffer;
-
-      Shape partial_all_to_all_shape = lhs_slice_shape;
-
+    if (dot->GetModule()
+            ->config()
+            .debug_options()
+            .xla_gpu_enable_windowed_einsum_all_to_all()) {
+      // Rewrites an all-to-all+gemm into multiple independent partial a2a+gemms
+      // to minimize communication overhead. To do this, the original input will
+      // be sliced into replica_group size and perform all-to-all+gemm.
+      HloInstruction* lhs;
+      HloInstruction* rhs;
+      std::vector<xla::ReplicaGroup> replica_groups;
       TF_ASSIGN_OR_RETURN(
-          Shape partial_dot_shape,
-          ShapeInference::InferDotOpShape(
-              partial_all_to_all_shape, rhs_slice_shape, original_dot_dnums,
-              /*preferred_element_type=*/std::nullopt));
-      int64_t stream_id = hlo_query::NextChannelId(*a2a->GetModule());
-      for (int64_t i = 0; i < group_size; ++i) {
-        lhs_slice = comp->AddInstruction(HloInstruction::CreateSlice(
-            lhs_slice_shape, a2a_operand, lhs_slice_sizes, lhs_slice_max_range,
-            lhs_slice_increments));
-        a2a->SetupDerivedInstruction(lhs_slice);
-        lhs_slice_sizes[lhs_contracting_dim] =
-            lhs_slice_max_range[lhs_contracting_dim];
-        lhs_slice_max_range[lhs_contracting_dim] += size_per_split;
+          bool matched, MatchA2aGemmWithIntermediateReshapes(dot, &lhs, &rhs));
+      if (matched) {
+        replica_groups = lhs->replica_groups();
+        // We split the a2a+gemm along the contracting dimension into multiple
+        // a2a+gemms and perform partial dots, partial results are added to the
+        // final output buffer.
+        int64_t group_size = replica_groups[0].replica_ids_size();
+        if (absl::c_find_if(replica_groups, [&](ReplicaGroup& group) {
+              return group.replica_ids_size() != group_size;
+            }) != replica_groups.end()) {
+          VLOG(5) << "All-to-all split groups don't have the same number of "
+                     "replicas.";
+          return absl::OkStatus();
+        }
 
-        rhs_slice = comp->AddInstruction(HloInstruction::CreateSlice(
-            rhs_slice_shape, rhs, rhs_slice_sizes, rhs_slice_max_range,
-            rhs_slice_increments));
-        a2a->SetupDerivedInstruction(rhs_slice);
-        rhs_slice_sizes[rhs_contracting_dim] =
-            rhs_slice_max_range[rhs_contracting_dim];
-        rhs_slice_max_range[rhs_contracting_dim] += size_per_split;
+        // Get the dimension to slice for lhs and rhs, we slice on the
+        // contracting dimensions to calculate partial results
+        const DotDimensionNumbers& original_dot_dnums =
+            dot->dot_dimension_numbers();
+        const PrecisionConfig& original_precision = dot->precision_config();
+        const auto& lhs_contracting_dims =
+            dot->dot_dimension_numbers().lhs_contracting_dimensions();
+        const auto& rhs_contracting_dims =
+            dot->dot_dimension_numbers().rhs_contracting_dimensions();
 
-        HloInstruction* partial_all_to_all =
-            comp->AddInstruction(HloInstruction::CreateAllToAll(
-                partial_all_to_all_shape, {lhs_slice}, a2a->device_list(),
-                false, hlo_query::NextChannelId(*a2a->GetModule()),
-                a2a->split_dimension()));
-        a2a->SetupDerivedInstruction(partial_all_to_all);
+        if (lhs_contracting_dims.size() != 1 ||
+            rhs_contracting_dims.size() != 1) {
+          VLOG(5)
+              << "Contracting dimensions have multiple elements, all-to-all "
+                 "sharding will be skipped.";
+          return absl::OkStatus();
+        }
+        int64_t lhs_contracting_dim = lhs_contracting_dims[0];
+        int64_t rhs_contracting_dim = rhs_contracting_dims[0];
+        HloAllToAllInstruction* a2a = DynCast<HloAllToAllInstruction>(lhs);
+        int64_t contracting_dim_value =
+            rhs->shape().dimensions()[rhs_contracting_dim];
 
-        HloInstruction* partial_dot =
-            comp->AddInstruction(HloInstruction::CreateDot(
-                partial_dot_shape, partial_all_to_all, rhs_slice,
-                original_dot_dnums, original_precision));
-        partial_result = comp->AddInstruction(
-            HloInstruction::CreateBinary(partial_dot->shape(), HloOpcode::kAdd,
-                                         partial_dot, partial_result));
-        a2a->SetupDerivedInstruction(partial_result);
-        TF_RETURN_IF_ERROR(
-            UpdateDotAndConsumerConfig(partial_dot, stream_id++));
+        // Each split is sliced out of the input buffer, we need to determine
+        // the slice sizes and increments.
+        std::vector<int64_t> lhs_slice_sizes(a2a->shape().rank(), 0);
+        std::vector<int64_t> lhs_slice_increments(a2a->shape().rank(), 1);
+        std::vector<int64_t> lhs_slice_max_range(
+            a2a->shape().dimensions().begin(), a2a->shape().dimensions().end());
+
+        std::vector<int64_t> rhs_slice_sizes(rhs->shape().rank(), 0);
+        std::vector<int64_t> rhs_slice_increments(rhs->shape().rank(), 1);
+        std::vector<int64_t> rhs_slice_max_range(
+            rhs->shape().dimensions().begin(), rhs->shape().dimensions().end());
+
+        // Create a zero-valued buffer to hold output.
+        HloInstruction* output_buffer =
+            comp->AddInstruction(HloInstruction::CreateBroadcast(
+                dot->shape(),
+                comp->AddInstruction(HloInstruction::CreateConstant(
+                    LiteralUtil::Zero(dot->shape().element_type()))),
+                {}));
+        HloInstruction* a2a_operand = a2a->mutable_operand(0);
+        if (contracting_dim_value % group_size) {
+          VLOG(5) << absl::StrFormat(
+              "Contracting dimension %d needs to be divisible by group_size %d",
+              contracting_dim_value, group_size);
+          return absl::OkStatus();
+        }
+        int64_t size_per_split = contracting_dim_value / group_size;
+
+        // Each split is sliced out of the input buffer, we need to determine
+        // the slice sizes and increments.
+        lhs_slice_max_range[lhs_contracting_dim] = size_per_split;
+        rhs_slice_max_range[rhs_contracting_dim] = size_per_split;
+
+        Shape lhs_slice_shape = a2a->shape();
+        Shape rhs_slice_shape = rhs->shape();
+
+        lhs_slice_shape.set_dimensions(lhs_contracting_dim, size_per_split);
+        rhs_slice_shape.set_dimensions(rhs_contracting_dim, size_per_split);
+
+        HloInstruction* lhs_slice;
+        HloInstruction* rhs_slice;
+
+        HloInstruction* partial_result = output_buffer;
+
+        Shape partial_all_to_all_shape = lhs_slice_shape;
+
+        TF_ASSIGN_OR_RETURN(
+            Shape partial_dot_shape,
+            ShapeInference::InferDotOpShape(
+                partial_all_to_all_shape, rhs_slice_shape, original_dot_dnums,
+                /*preferred_element_type=*/std::nullopt));
+        int64_t stream_id = hlo_query::NextChannelId(*a2a->GetModule());
+        for (int64_t i = 0; i < group_size; ++i) {
+          lhs_slice = comp->AddInstruction(HloInstruction::CreateSlice(
+              lhs_slice_shape, a2a_operand, lhs_slice_sizes,
+              lhs_slice_max_range, lhs_slice_increments));
+          a2a->SetupDerivedInstruction(lhs_slice);
+          lhs_slice_sizes[lhs_contracting_dim] =
+              lhs_slice_max_range[lhs_contracting_dim];
+          lhs_slice_max_range[lhs_contracting_dim] += size_per_split;
+
+          rhs_slice = comp->AddInstruction(HloInstruction::CreateSlice(
+              rhs_slice_shape, rhs, rhs_slice_sizes, rhs_slice_max_range,
+              rhs_slice_increments));
+          a2a->SetupDerivedInstruction(rhs_slice);
+          rhs_slice_sizes[rhs_contracting_dim] =
+              rhs_slice_max_range[rhs_contracting_dim];
+          rhs_slice_max_range[rhs_contracting_dim] += size_per_split;
+
+          HloInstruction* partial_all_to_all =
+              comp->AddInstruction(HloInstruction::CreateAllToAll(
+                  partial_all_to_all_shape, {lhs_slice}, a2a->device_list(),
+                  false, hlo_query::NextChannelId(*a2a->GetModule()),
+                  a2a->split_dimension()));
+          a2a->SetupDerivedInstruction(partial_all_to_all);
+
+          HloInstruction* partial_dot =
+              comp->AddInstruction(HloInstruction::CreateDot(
+                  partial_dot_shape, partial_all_to_all, rhs_slice,
+                  original_dot_dnums, original_precision));
+          partial_result = comp->AddInstruction(HloInstruction::CreateBinary(
+              partial_dot->shape(), HloOpcode::kAdd, partial_dot,
+              partial_result));
+          a2a->SetupDerivedInstruction(partial_result);
+          TF_RETURN_IF_ERROR(
+              UpdateDotAndConsumerConfig(partial_dot, stream_id++));
+        }
+        TF_RETURN_IF_ERROR(ReplaceInstruction(dot, partial_result));
       }
-      TF_RETURN_IF_ERROR(ReplaceInstruction(dot, partial_result));
     }
     return absl::OkStatus();
   }
@@ -980,148 +992,155 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
   absl::Status HandleAllToAll(HloInstruction* inst) override {
     CHECK_EQ(inst->opcode(), HloOpcode::kAllToAll);
     HloComputation* comp = inst->parent();
-    // Rewrites a gemm+alltoall into multiple independent partial gemm+a2as
-    // to minimize communication overhead.
-    std::vector<xla::ReplicaGroup> replica_groups;
-    TF_ASSIGN_OR_RETURN(MatchedGemmA2aResult matched_result,
-                        MatchGemmA2aWithIntermediateReshapes(inst));
-    if (matched_result.matched) {
-      HloInstruction* a2a = inst;
-      if (matched_result.a2a_replacement) {
-        a2a = matched_result.a2a_replacement;
+    if (inst->GetModule()
+            ->config()
+            .debug_options()
+            .xla_gpu_enable_windowed_einsum_all_to_all()) {
+      // Rewrites a gemm+alltoall into multiple independent partial gemm+a2as
+      // to minimize communication overhead.
+      std::vector<xla::ReplicaGroup> replica_groups;
+      TF_ASSIGN_OR_RETURN(MatchedGemmA2aResult matched_result,
+                          MatchGemmA2aWithIntermediateReshapes(inst));
+      if (matched_result.matched) {
+        HloInstruction* a2a = inst;
+        if (matched_result.a2a_replacement) {
+          a2a = matched_result.a2a_replacement;
+        }
+        replica_groups = a2a->replica_groups();
+        // Similar to a2a+gemm, we split along contracting dimensions
+        // and aggregate result at each step.
+        int64_t group_size = replica_groups[0].replica_ids_size();
+
+        if (absl::c_find_if(replica_groups, [&](ReplicaGroup& group) {
+              return group.replica_ids_size() != group_size;
+            }) != replica_groups.end()) {
+          VLOG(5) << "All-to-all split groups don't have the same number of "
+                     "replicas.";
+          return absl::OkStatus();
+        }
+
+        // Get the dimension to slice for lhs and rhs, we slice on the
+        // contracting dimensions to calculate partial results
+        const DotDimensionNumbers& original_dot_dnums =
+            matched_result.producer_gemm->dot_dimension_numbers();
+        const PrecisionConfig& original_precision =
+            matched_result.producer_gemm->precision_config();
+        const auto& lhs_contracting_dims =
+            matched_result.producer_gemm->dot_dimension_numbers()
+                .lhs_contracting_dimensions();
+        const auto& rhs_contracting_dims =
+            matched_result.producer_gemm->dot_dimension_numbers()
+                .rhs_contracting_dimensions();
+
+        if (lhs_contracting_dims.size() != 1 ||
+            rhs_contracting_dims.size() != 1) {
+          VLOG(5)
+              << "Contracting dimensions have multiple elements, all-to-all "
+                 "sharding will be skipped.";
+          return absl::OkStatus();
+        }
+        int64_t lhs_contracting_dim = lhs_contracting_dims[0];
+        int64_t rhs_contracting_dim = rhs_contracting_dims[0];
+        HloAllToAllInstruction* all_to_all =
+            DynCast<HloAllToAllInstruction>(a2a);
+        int64_t contracting_dim_value =
+            matched_result.rhs->shape().dimensions()[rhs_contracting_dim];
+        // Each split is sliced out of the input buffer, we need to determine
+        // the slice sizes and increments.
+        std::vector<int64_t> lhs_slice_sizes(matched_result.lhs->shape().rank(),
+                                             0);
+        std::vector<int64_t> lhs_slice_increments(
+            matched_result.lhs->shape().rank(), 1);
+        std::vector<int64_t> lhs_slice_max_range(
+            matched_result.lhs->shape().dimensions().begin(),
+            matched_result.lhs->shape().dimensions().end());
+
+        std::vector<int64_t> rhs_slice_sizes(matched_result.rhs->shape().rank(),
+                                             0);
+        std::vector<int64_t> rhs_slice_increments(
+            matched_result.rhs->shape().rank(), 1);
+        std::vector<int64_t> rhs_slice_max_range(
+            matched_result.rhs->shape().dimensions().begin(),
+            matched_result.rhs->shape().dimensions().end());
+
+        // Create a zero-valued buffer to hold output.
+        HloInstruction* output_buffer =
+            comp->AddInstruction(HloInstruction::CreateBroadcast(
+                all_to_all->shape(),
+                comp->AddInstruction(HloInstruction::CreateConstant(
+                    LiteralUtil::Zero(all_to_all->shape().element_type()))),
+                {}));
+        if (contracting_dim_value % group_size) {
+          VLOG(5) << absl::StrFormat(
+              "Contracting dimension %d needs to be divisible by group_size %d",
+              contracting_dim_value, group_size);
+          return absl::OkStatus();
+        }
+
+        int64_t size_per_split = contracting_dim_value / group_size;
+        // Each split is sliced out of the input buffer, we need to determine
+        // the slice sizes and increments.
+        lhs_slice_max_range[lhs_contracting_dim] = size_per_split;
+        rhs_slice_max_range[rhs_contracting_dim] = size_per_split;
+
+        Shape lhs_slice_shape = matched_result.lhs->shape();
+        Shape rhs_slice_shape = matched_result.rhs->shape();
+
+        lhs_slice_shape.set_dimensions(lhs_contracting_dim, size_per_split);
+        rhs_slice_shape.set_dimensions(rhs_contracting_dim, size_per_split);
+
+        HloInstruction* lhs_slice;
+        HloInstruction* rhs_slice;
+
+        HloInstruction* partial_result = output_buffer;
+        Shape partial_all_to_all_shape = all_to_all->shape();
+
+        TF_ASSIGN_OR_RETURN(
+            Shape partial_dot_shape,
+            ShapeInference::InferDotOpShape(
+                lhs_slice_shape, rhs_slice_shape, original_dot_dnums,
+                /*preferred_element_type=*/std::nullopt));
+        int64_t stream_id = hlo_query::NextChannelId(*all_to_all->GetModule());
+        for (int64_t i = 0; i < group_size; ++i) {
+          lhs_slice = comp->AddInstruction(HloInstruction::CreateSlice(
+              lhs_slice_shape, matched_result.lhs, lhs_slice_sizes,
+              lhs_slice_max_range, lhs_slice_increments));
+          all_to_all->SetupDerivedInstruction(lhs_slice);
+          lhs_slice_sizes[lhs_contracting_dim] =
+              lhs_slice_max_range[lhs_contracting_dim];
+          lhs_slice_max_range[lhs_contracting_dim] += size_per_split;
+
+          rhs_slice = comp->AddInstruction(HloInstruction::CreateSlice(
+              rhs_slice_shape, matched_result.rhs, rhs_slice_sizes,
+              rhs_slice_max_range, rhs_slice_increments));
+
+          all_to_all->SetupDerivedInstruction(rhs_slice);
+          rhs_slice_sizes[rhs_contracting_dim] =
+              rhs_slice_max_range[rhs_contracting_dim];
+          rhs_slice_max_range[rhs_contracting_dim] += size_per_split;
+
+          HloInstruction* partial_dot =
+              comp->AddInstruction(HloInstruction::CreateDot(
+                  partial_dot_shape, lhs_slice, rhs_slice, original_dot_dnums,
+                  original_precision));
+
+          HloInstruction* partial_all_to_all =
+              comp->AddInstruction(HloInstruction::CreateAllToAll(
+                  partial_all_to_all_shape, {partial_dot},
+                  all_to_all->device_list(), false,
+                  hlo_query::NextChannelId(*all_to_all->GetModule()),
+                  all_to_all->split_dimension()));
+          all_to_all->SetupDerivedInstruction(partial_all_to_all);
+          partial_result = comp->AddInstruction(HloInstruction::CreateBinary(
+              partial_all_to_all_shape, HloOpcode::kAdd, partial_all_to_all,
+              partial_result));
+          all_to_all->SetupDerivedInstruction(partial_result);
+          TF_RETURN_IF_ERROR(
+              UpdateDotAndConsumerConfig(partial_dot, stream_id++));
+        }
+        TF_RETURN_IF_ERROR(ReplaceInstruction(all_to_all, partial_result));
       }
-      replica_groups = a2a->replica_groups();
-      // Similar to a2a+gemm, we split along contracting dimensions
-      // and aggregate result at each step.
-      int64_t group_size = replica_groups[0].replica_ids_size();
-
-      if (absl::c_find_if(replica_groups, [&](ReplicaGroup& group) {
-            return group.replica_ids_size() != group_size;
-          }) != replica_groups.end()) {
-        VLOG(5) << "All-to-all split groups don't have the same number of "
-                   "replicas.";
-        return absl::OkStatus();
-      }
-
-      // Get the dimension to slice for lhs and rhs, we slice on the contracting
-      // dimensions to calculate partial results
-      const DotDimensionNumbers& original_dot_dnums =
-          matched_result.producer_gemm->dot_dimension_numbers();
-      const PrecisionConfig& original_precision =
-          matched_result.producer_gemm->precision_config();
-      const auto& lhs_contracting_dims =
-          matched_result.producer_gemm->dot_dimension_numbers()
-              .lhs_contracting_dimensions();
-      const auto& rhs_contracting_dims =
-          matched_result.producer_gemm->dot_dimension_numbers()
-              .rhs_contracting_dimensions();
-
-      if (lhs_contracting_dims.size() != 1 ||
-          rhs_contracting_dims.size() != 1) {
-        VLOG(5) << "Contracting dimensions have multiple elements, all-to-all "
-                   "sharding will be skipped.";
-        return absl::OkStatus();
-      }
-      int64_t lhs_contracting_dim = lhs_contracting_dims[0];
-      int64_t rhs_contracting_dim = rhs_contracting_dims[0];
-      HloAllToAllInstruction* all_to_all = DynCast<HloAllToAllInstruction>(a2a);
-      int64_t contracting_dim_value =
-          matched_result.rhs->shape().dimensions()[rhs_contracting_dim];
-      // Each split is sliced out of the input buffer, we need to determine the
-      // slice sizes and increments.
-      std::vector<int64_t> lhs_slice_sizes(matched_result.lhs->shape().rank(),
-                                           0);
-      std::vector<int64_t> lhs_slice_increments(
-          matched_result.lhs->shape().rank(), 1);
-      std::vector<int64_t> lhs_slice_max_range(
-          matched_result.lhs->shape().dimensions().begin(),
-          matched_result.lhs->shape().dimensions().end());
-
-      std::vector<int64_t> rhs_slice_sizes(matched_result.rhs->shape().rank(),
-                                           0);
-      std::vector<int64_t> rhs_slice_increments(
-          matched_result.rhs->shape().rank(), 1);
-      std::vector<int64_t> rhs_slice_max_range(
-          matched_result.rhs->shape().dimensions().begin(),
-          matched_result.rhs->shape().dimensions().end());
-
-      // Create a zero-valued buffer to hold output.
-      HloInstruction* output_buffer =
-          comp->AddInstruction(HloInstruction::CreateBroadcast(
-              all_to_all->shape(),
-              comp->AddInstruction(HloInstruction::CreateConstant(
-                  LiteralUtil::Zero(all_to_all->shape().element_type()))),
-              {}));
-      if (contracting_dim_value % group_size) {
-        VLOG(5) << absl::StrFormat(
-            "Contracting dimension %d needs to be divisible by group_size %d",
-            contracting_dim_value, group_size);
-        return absl::OkStatus();
-      }
-
-      int64_t size_per_split = contracting_dim_value / group_size;
-      // Each split is sliced out of the input buffer, we need to determine the
-      // slice sizes and increments.
-      lhs_slice_max_range[lhs_contracting_dim] = size_per_split;
-      rhs_slice_max_range[rhs_contracting_dim] = size_per_split;
-
-      Shape lhs_slice_shape = matched_result.lhs->shape();
-      Shape rhs_slice_shape = matched_result.rhs->shape();
-
-      lhs_slice_shape.set_dimensions(lhs_contracting_dim, size_per_split);
-      rhs_slice_shape.set_dimensions(rhs_contracting_dim, size_per_split);
-
-      HloInstruction* lhs_slice;
-      HloInstruction* rhs_slice;
-
-      HloInstruction* partial_result = output_buffer;
-      Shape partial_all_to_all_shape = all_to_all->shape();
-
-      TF_ASSIGN_OR_RETURN(
-          Shape partial_dot_shape,
-          ShapeInference::InferDotOpShape(
-              lhs_slice_shape, rhs_slice_shape, original_dot_dnums,
-              /*preferred_element_type=*/std::nullopt));
-      int64_t stream_id = hlo_query::NextChannelId(*all_to_all->GetModule());
-      for (int64_t i = 0; i < group_size; ++i) {
-        lhs_slice = comp->AddInstruction(HloInstruction::CreateSlice(
-            lhs_slice_shape, matched_result.lhs, lhs_slice_sizes,
-            lhs_slice_max_range, lhs_slice_increments));
-        all_to_all->SetupDerivedInstruction(lhs_slice);
-        lhs_slice_sizes[lhs_contracting_dim] =
-            lhs_slice_max_range[lhs_contracting_dim];
-        lhs_slice_max_range[lhs_contracting_dim] += size_per_split;
-
-        rhs_slice = comp->AddInstruction(HloInstruction::CreateSlice(
-            rhs_slice_shape, matched_result.rhs, rhs_slice_sizes,
-            rhs_slice_max_range, rhs_slice_increments));
-
-        all_to_all->SetupDerivedInstruction(rhs_slice);
-        rhs_slice_sizes[rhs_contracting_dim] =
-            rhs_slice_max_range[rhs_contracting_dim];
-        rhs_slice_max_range[rhs_contracting_dim] += size_per_split;
-
-        HloInstruction* partial_dot = comp->AddInstruction(
-            HloInstruction::CreateDot(partial_dot_shape, lhs_slice, rhs_slice,
-                                      original_dot_dnums, original_precision));
-
-        HloInstruction* partial_all_to_all =
-            comp->AddInstruction(HloInstruction::CreateAllToAll(
-                partial_all_to_all_shape, {partial_dot},
-                all_to_all->device_list(), false,
-                hlo_query::NextChannelId(*all_to_all->GetModule()),
-                all_to_all->split_dimension()));
-        all_to_all->SetupDerivedInstruction(partial_all_to_all);
-        partial_result = comp->AddInstruction(HloInstruction::CreateBinary(
-            partial_all_to_all_shape, HloOpcode::kAdd, partial_all_to_all,
-            partial_result));
-        all_to_all->SetupDerivedInstruction(partial_result);
-        TF_RETURN_IF_ERROR(
-            UpdateDotAndConsumerConfig(partial_dot, stream_id++));
-      }
-      TF_RETURN_IF_ERROR(ReplaceInstruction(all_to_all, partial_result));
     }
-
     return absl::OkStatus();
   }
 

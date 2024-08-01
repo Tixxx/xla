@@ -144,6 +144,8 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_enable_dumping(true);
 
   opts.set_xla_gpu_enable_custom_fusions(false);
+  opts.set_xla_gpu_enable_windowed_einsum_all_to_all(true);
+
   opts.set_xla_gpu_enable_address_computation_fusion(false);
   opts.set_xla_gpu_nccl_termination_timeout_seconds(-1);
   opts.set_xla_gpu_enable_shared_constants(true);
@@ -1273,6 +1275,12 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       bool_setter_for(&DebugOptions::set_xla_gpu_enable_custom_fusions),
       debug_options->xla_gpu_enable_custom_fusions(),
       "Whether to enable XLA custom fusions"));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_enable_windowed_einsum_all_to_all",
+      bool_setter_for(&DebugOptions::set_xla_gpu_enable_windowed_einsum_all_to_all),
+      debug_options->xla_gpu_enable_windowed_einsum_all_to_all(),
+      "Whether to enable windowed einsum on all to all"));
+
   flag_list->push_back(tsl::Flag(
       "xla_gpu_enable_custom_fusions_re",
       string_setter_for(&DebugOptions::set_xla_gpu_enable_custom_fusions_re),

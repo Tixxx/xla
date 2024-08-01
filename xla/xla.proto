@@ -842,8 +842,8 @@ message DebugOptions {
   // This flag is read if CUSTOM_CALL command type is recorded into
   // command buffer.
   repeated string legacy_command_buffer_custom_call_targets = 314;
-
-  // Next id: 315
+  bool xla_gpu_enable_windowed_einsum_all_to_all = 315;
+  // Next id: 316
 
   // Extra options to pass to the compilation backend (e.g. LLVM); specific
   // interpretation of these values is left to the backend.
