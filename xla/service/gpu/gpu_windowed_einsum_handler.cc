@@ -540,6 +540,25 @@ bool ShouldAddToChain(const HloInstruction* inst) {
 }
 absl::Status PostProcessUnrolledLoop(HloInstruction* loop, int64_t stream_id) {
   HloComputation* while_body = loop->while_body();
+  if(while_body->name().find(
+          GpuWindowedEinsumHandler::kWindowedEinsumRsLoopName) != std::string::npos) {
+    // Find the 3rd tuple output of while loop
+    int64_t tuple_index_has_cp = 2;
+    auto it = absl::c_find_if(loop->users(), [&](HloInstruction* i) { return i->tuple_index() == tuple_index_has_cp; });
+    CHECK(it != loop->users().end());
+    HloInstruction* gte_2 = *it;
+    CHECK(gte_2->users().size() == 1);
+    if(gte_2->users()[0]->opcode() == HloOpcode::kCollectivePermute) {
+      // Pull the collective permute into the while loop
+      HloInstruction* while_root = while_body->root_instruction();
+      HloInstruction* new_cp = while_body->AddInstruction(gte_2->users()[0]->Clone());
+      HloInstruction* original_tuple_operand = while_root->mutable_operand(tuple_index_has_cp);
+      TF_RETURN_IF_ERROR(new_cp->ReplaceOperandWith(0, original_tuple_operand));
+      TF_RETURN_IF_ERROR(while_root->ReplaceOperandWith(tuple_index_has_cp, new_cp));
+      TF_RETURN_IF_ERROR(gte_2->users()[0]->ReplaceAllUsesWith(gte_2));
+      TF_RETURN_IF_ERROR(gte_2->parent()->RemoveInstruction(gte_2->users()[0]));
+    }
+  }
   // This is to set force delay for the first collective permute so it can
   // be scheduled always at the top of computation. The GTE index it's consuming
   // is 2 for RS loop; 0 for AG loop.
