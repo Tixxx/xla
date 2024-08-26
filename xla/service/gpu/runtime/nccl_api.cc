@@ -330,11 +330,13 @@ class DefaultNcclApi final : public NcclApi {
   absl::Status Send(se::DeviceMemoryBase send_buffer, PrimitiveType dtype,
                     size_t count, int32_t peer, NcclCommHandle comm,
                     se::Stream* stream) final;
-
+  absl::Status SendPtrToPeer(void* ptr, int32_t peer, NcclCommHandle comm,
+                             se::Stream* stream) final;
   absl::Status Recv(se::DeviceMemoryBase recv_buffer, PrimitiveType dtype,
                     size_t count, int32_t peer, NcclCommHandle comm,
                     se::Stream* stream) final;
-
+ absl::Status RecvPtrFromPeer(void* ptr, int32_t peer, NcclCommHandle comm,
+                               se::Stream* stream) final;
   absl::StatusOr<NcclRegisteredBufferHandle> RegisterBuffer(
       NcclCommHandle comm, se::DeviceMemoryBase buffer) final;
 
