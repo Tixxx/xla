@@ -192,6 +192,9 @@ class GpuExecutor : public StreamExecutorCommon {
                                  const DeviceMemoryBase& gpu_src,
                                  uint64_t size) override;
 
+  bool HostMemoryRegister(void* location, uint64_t size) override;
+
+  bool HostMemoryUnregister(void* location) override;
   void DeallocateStream(Stream* stream) override;
 
   absl::Status BlockHostUntilDone(Stream* stream) override;

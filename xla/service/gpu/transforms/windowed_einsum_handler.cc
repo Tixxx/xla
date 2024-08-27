@@ -467,6 +467,24 @@ bool ShouldAddToChain(const HloInstruction* inst) {
       return false;
   }
 }
+
+HloComputation* MakeSumComputation(PrimitiveType type, HloModule* module) {
+  HloComputation::Builder sum_b("add");
+  auto x = sum_b.AddInstruction(HloInstruction::CreateParameter(
+      /*parameter_number=*/0, ShapeUtil::MakeShape(type, {}), "x"));
+  auto y = sum_b.AddInstruction(HloInstruction::CreateParameter(
+      /*parameter_number=*/1, ShapeUtil::MakeShape(type, {}), "y"));
+  if (type == PRED) {
+    sum_b.AddInstruction(HloInstruction::CreateBinary(
+        ShapeUtil::MakeShape(type, {}), HloOpcode::kOr, x, y));
+  } else {
+    sum_b.AddInstruction(HloInstruction::CreateBinary(
+        ShapeUtil::MakeShape(type, {}), HloOpcode::kAdd, x, y));
+  }
+  HloComputation* reduction = module->AddEmbeddedComputation(sum_b.Build());
+  return reduction;
+}
+
 absl::Status PostProcessUnrolledLoop(HloInstruction* loop, int64_t stream_id) {
   HloComputation* while_body = loop->while_body();
   // This is to set force delay for the first collective permute so it can
@@ -477,6 +495,7 @@ absl::Status PostProcessUnrolledLoop(HloInstruction* loop, int64_t stream_id) {
           WindowedEinsumHandler::kWindowedEinsumRsLoopName) == 0
           ? 2
           : 0;
+  std::vector<HloInstruction*> partial_accumulations;
   for (HloInstruction* inst : while_body->MakeInstructionPostOrder()) {
     HloInstruction* matched_cp;
     if (Match(inst,
@@ -492,6 +511,47 @@ absl::Status PostProcessUnrolledLoop(HloInstruction* loop, int64_t stream_id) {
       TF_RETURN_IF_ERROR(UpdateDotAndConsumerConfig(inst, stream_id));
       ++stream_id;
     }
+    // If dot's result is accumulated, this means we found a loop with
+    // contracting dim sharded.
+    HloInstruction* partial_dot;
+    if (Match(inst, m::AddAnyOrder(m::Op(), m::Dot(&partial_dot, m::Op(), m::Op())))) {
+      partial_accumulations.push_back(partial_dot);
+    }
+  }
+
+  // Transform partial accumulations into a reduction on a contiguous buffer.
+  if (partial_accumulations.size() > 0 &&
+      while_body->name().find(
+          WindowedEinsumHandler::kWindowedEinsumAgLoopName) != std::string::npos) {
+    std::vector<HloInstruction*> partials_to_concat;
+
+    // We reshape it to a N+1 dimensioned tensor with left-most dim being 1.
+    Shape shape = partial_accumulations[0]->shape();
+    shape = ShapeUtil::PrependMajorDimension(1, shape);
+
+    for (auto& inst : partial_accumulations) {
+      CHECK(inst->user_count() == 1);
+      HloInstruction* reshaped_partial = while_body->AddInstruction(
+          HloInstruction::CreateReshape(shape, inst));
+      partials_to_concat.push_back(reshaped_partial);
+    }
+    Shape concat_shape = partial_accumulations[0]->shape();
+    concat_shape = ShapeUtil::PrependMajorDimension(partial_accumulations.size(), concat_shape);
+
+    HloInstruction* concat = while_body->AddInstruction(
+        HloInstruction::CreateConcatenate(concat_shape, partials_to_concat, 0));
+
+    HloInstruction* constant_zero =
+        while_body->AddInstruction(HloInstruction::CreateConstant(
+            LiteralUtil::Zero(shape.element_type())));
+
+    HloInstruction* reduced_result =
+        while_body->AddInstruction(HloInstruction::CreateReduce(
+            partial_accumulations[0]->shape(), concat, {constant_zero}, {0},
+            MakeSumComputation(shape.element_type(), loop->GetModule())));
+
+    TF_RETURN_IF_ERROR(
+        while_body->root_instruction()->ReplaceOperandWithDifferentShape(2, reduced_result));    
   }
   return absl::OkStatus();
 }
@@ -751,8 +811,8 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
       HloInstruction* lhs;
       HloInstruction* rhs;
       std::vector<xla::ReplicaGroup> replica_groups;
-      TF_ASSIGN_OR_RETURN(bool matched,
-                          MatchA2aGemmWithIntermediateReshapes(dot, &lhs, &rhs));
+      TF_ASSIGN_OR_RETURN(
+          bool matched, MatchA2aGemmWithIntermediateReshapes(dot, &lhs, &rhs));
       if (matched) {
         replica_groups = lhs->replica_groups();
         // We split the a2a+gemm along the contracting dimension into multiple
@@ -763,12 +823,12 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
               return group.replica_ids_size() != group_size;
             }) != replica_groups.end()) {
           VLOG(5) << "All-to-all split groups don't have the same number of "
-                    "replicas.";
+                     "replicas.";
           return absl::OkStatus();
         }
 
-        // Get the dimension to slice for lhs and rhs, we slice on the contracting
-        // dimensions to calculate partial results
+        // Get the dimension to slice for lhs and rhs, we slice on the
+        // contracting dimensions to calculate partial results
         const DotDimensionNumbers& original_dot_dnums =
             dot->dot_dimension_numbers();
         const PrecisionConfig& original_precision = dot->precision_config();
@@ -779,8 +839,9 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
 
         if (lhs_contracting_dims.size() != 1 ||
             rhs_contracting_dims.size() != 1) {
-          VLOG(5) << "Contracting dimensions have multiple elements, all-to-all "
-                    "sharding will be skipped.";
+          VLOG(5)
+              << "Contracting dimensions have multiple elements, all-to-all "
+                 "sharding will be skipped.";
           return absl::OkStatus();
         }
         int64_t lhs_contracting_dim = lhs_contracting_dims[0];
@@ -789,8 +850,8 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
         int64_t contracting_dim_value =
             rhs->shape().dimensions()[rhs_contracting_dim];
 
-        // Each split is sliced out of the input buffer, we need to determine the
-        // slice sizes and increments.
+        // Each split is sliced out of the input buffer, we need to determine
+        // the slice sizes and increments.
         std::vector<int64_t> lhs_slice_sizes(a2a->shape().rank(), 0);
         std::vector<int64_t> lhs_slice_increments(a2a->shape().rank(), 1);
         std::vector<int64_t> lhs_slice_max_range(
@@ -817,8 +878,8 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
         }
         int64_t size_per_split = contracting_dim_value / group_size;
 
-        // Each split is sliced out of the input buffer, we need to determine the
-        // slice sizes and increments.
+        // Each split is sliced out of the input buffer, we need to determine
+        // the slice sizes and increments.
         lhs_slice_max_range[lhs_contracting_dim] = size_per_split;
         rhs_slice_max_range[rhs_contracting_dim] = size_per_split;
 
@@ -843,8 +904,8 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
         int64_t stream_id = hlo_query::NextChannelId(*a2a->GetModule());
         for (int64_t i = 0; i < group_size; ++i) {
           lhs_slice = comp->AddInstruction(HloInstruction::CreateSlice(
-              lhs_slice_shape, a2a_operand, lhs_slice_sizes, lhs_slice_max_range,
-              lhs_slice_increments));
+              lhs_slice_shape, a2a_operand, lhs_slice_sizes,
+              lhs_slice_max_range, lhs_slice_increments));
           a2a->SetupDerivedInstruction(lhs_slice);
           lhs_slice_sizes[lhs_contracting_dim] =
               lhs_slice_max_range[lhs_contracting_dim];
@@ -869,9 +930,9 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
               comp->AddInstruction(HloInstruction::CreateDot(
                   partial_dot_shape, partial_all_to_all, rhs_slice,
                   original_dot_dnums, original_precision));
-          partial_result = comp->AddInstruction(
-              HloInstruction::CreateBinary(partial_dot->shape(), HloOpcode::kAdd,
-                                          partial_dot, partial_result));
+          partial_result = comp->AddInstruction(HloInstruction::CreateBinary(
+              partial_dot->shape(), HloOpcode::kAdd, partial_dot,
+              partial_result));
           a2a->SetupDerivedInstruction(partial_result);
           TF_RETURN_IF_ERROR(
               UpdateDotAndConsumerConfig(partial_dot, stream_id++));
@@ -995,12 +1056,12 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
               return group.replica_ids_size() != group_size;
             }) != replica_groups.end()) {
           VLOG(5) << "All-to-all split groups don't have the same number of "
-                    "replicas.";
+                     "replicas.";
           return absl::OkStatus();
         }
 
-        // Get the dimension to slice for lhs and rhs, we slice on the contracting
-        // dimensions to calculate partial results
+        // Get the dimension to slice for lhs and rhs, we slice on the
+        // contracting dimensions to calculate partial results
         const DotDimensionNumbers& original_dot_dnums =
             matched_result.producer_gemm->dot_dimension_numbers();
         const PrecisionConfig& original_precision =
@@ -1014,19 +1075,21 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
 
         if (lhs_contracting_dims.size() != 1 ||
             rhs_contracting_dims.size() != 1) {
-          VLOG(5) << "Contracting dimensions have multiple elements, all-to-all "
-                    "sharding will be skipped.";
+          VLOG(5)
+              << "Contracting dimensions have multiple elements, all-to-all "
+                 "sharding will be skipped.";
           return absl::OkStatus();
         }
         int64_t lhs_contracting_dim = lhs_contracting_dims[0];
         int64_t rhs_contracting_dim = rhs_contracting_dims[0];
-        HloAllToAllInstruction* all_to_all = DynCast<HloAllToAllInstruction>(a2a);
+        HloAllToAllInstruction* all_to_all =
+            DynCast<HloAllToAllInstruction>(a2a);
         int64_t contracting_dim_value =
             matched_result.rhs->shape().dimensions()[rhs_contracting_dim];
-        // Each split is sliced out of the input buffer, we need to determine the
-        // slice sizes and increments.
+        // Each split is sliced out of the input buffer, we need to determine
+        // the slice sizes and increments.
         std::vector<int64_t> lhs_slice_sizes(matched_result.lhs->shape().rank(),
-                                            0);
+                                             0);
         std::vector<int64_t> lhs_slice_increments(
             matched_result.lhs->shape().rank(), 1);
         std::vector<int64_t> lhs_slice_max_range(
@@ -1034,7 +1097,7 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
             matched_result.lhs->shape().dimensions().end());
 
         std::vector<int64_t> rhs_slice_sizes(matched_result.rhs->shape().rank(),
-                                            0);
+                                             0);
         std::vector<int64_t> rhs_slice_increments(
             matched_result.rhs->shape().rank(), 1);
         std::vector<int64_t> rhs_slice_max_range(
@@ -1056,8 +1119,8 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
         }
 
         int64_t size_per_split = contracting_dim_value / group_size;
-        // Each split is sliced out of the input buffer, we need to determine the
-        // slice sizes and increments.
+        // Each split is sliced out of the input buffer, we need to determine
+        // the slice sizes and increments.
         lhs_slice_max_range[lhs_contracting_dim] = size_per_split;
         rhs_slice_max_range[rhs_contracting_dim] = size_per_split;
 
@@ -1097,9 +1160,10 @@ class WindowedEinsumVisitor : public DfsHloRewriteVisitor {
               rhs_slice_max_range[rhs_contracting_dim];
           rhs_slice_max_range[rhs_contracting_dim] += size_per_split;
 
-          HloInstruction* partial_dot = comp->AddInstruction(
-              HloInstruction::CreateDot(partial_dot_shape, lhs_slice, rhs_slice,
-                                        original_dot_dnums, original_precision));
+          HloInstruction* partial_dot =
+              comp->AddInstruction(HloInstruction::CreateDot(
+                  partial_dot_shape, lhs_slice, rhs_slice, original_dot_dnums,
+                  original_precision));
 
           HloInstruction* partial_all_to_all =
               comp->AddInstruction(HloInstruction::CreateAllToAll(

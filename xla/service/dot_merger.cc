@@ -438,8 +438,7 @@ absl::StatusOr<bool> DotMerger::Run(
   for (HloComputation* comp :
        module->MakeNonfusionComputations(execution_threads)) {
     TF_ASSIGN_OR_RETURN(bool changed_computation,
-                        MergeDots(comp, max_size_to_merge_, is_compatibl
-e_));
+                        MergeDots(comp, max_size_to_merge_, is_compatible_));
     changed |= changed_computation;
   }
   return changed;
