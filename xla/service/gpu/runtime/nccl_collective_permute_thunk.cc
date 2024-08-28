@@ -284,9 +284,11 @@ absl::Status RunCollectivePermute(
   // Only change the pointer value when it's different from stored one.
   if (source_id && send_ptr_value != (uint64_t)dest_addr.opaque()) {
     send_ptr_value = (uint64_t)dest_addr.opaque();
-    VLOG(5) << "###send_ptr_value changed: " << (void*)send_ptr_value;
+    VLOG(5) << "send_ptr_value changed: " << (void*)send_ptr_value;
   }
-  const bool is_nccl_group_needed = (target_id && source_id);
+  const bool is_nccl_group_needed = (target_id && source_id) || use_memcpy;
+    VLOG(5) << "is_nccl_group_needed: " << is_nccl_group_needed;
+
   if (is_nccl_group_needed) {
     TF_RETURN_IF_ERROR(nccl_api->GroupStart());
   }
@@ -297,6 +299,7 @@ absl::Status RunCollectivePermute(
     // If sending to another peer, get the pointer value of the src addr.
     // Only change the pointer value when it's different from stored one.
     if (target_id) {
+      VLOG(3) << "receiving pointer from target_id: " << *target_id;
 
       TF_RETURN_IF_ERROR(
           nccl_api->RecvPtrFromPeer(&recv_ptr_value, *target_id, comm, &stream));
