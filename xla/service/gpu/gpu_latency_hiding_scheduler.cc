@@ -239,6 +239,11 @@ int64_t GpuAsyncTracker::GetNumAvailableResources(int64_t resource_type) const {
     return 3;
   }
 
+  if ((resource_type - first_target_resource) ==
+      static_cast<int64_t>(GpuResourceType::kGpuAsyncStreamCollectives)) {
+    return 2;
+  }
+
   return 1;
 }
 
