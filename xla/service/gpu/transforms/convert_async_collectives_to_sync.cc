@@ -38,7 +38,7 @@ absl::Status GpuConvertAsyncCollectivesToSync::ConvertAsyncInstructionsToSync(
     const {
   absl::flat_hash_map<HloInstruction*, HloInstruction*> replaced_ops;
   CollectiveBackendConfig sync_config;
-  sync_config.set_is_sync(true);
+  // sync_config.set_is_sync(true);
   for (auto& [async_start, async_done] : async_pairs) {
     // Tag the async start with is_sync = true.
     TF_ASSIGN_OR_RETURN(GpuBackendConfig gpu_config,

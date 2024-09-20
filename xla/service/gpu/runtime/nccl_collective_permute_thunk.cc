@@ -172,6 +172,13 @@ absl::Status NcclCollectivePermuteStartThunk::Initialize(
         VLOG(5) << "Registering host recv pointer for memcpy failed.";
       }
     }
+    // if (sync_var_map_.find(current_id) == sync_var_map_.end()) {
+
+    //   if (!params.stream->parent()->HostMemoryRegister(
+    //           &sync_var_map_[current_id], sizeof(void*))) {
+    //     VLOG(5) << "Registering synchronization var failed.";
+    //   }
+    // }
     // TF_RETURN_IF_ERROR(recv_ptr_map_.InitializeId(current_id));
   }
 
@@ -197,6 +204,12 @@ absl::Status NcclCollectivePermuteStartThunk::Cleanup(
         VLOG(5) << "Unregistering host recv pointer for memcpy failed.";
       }
     }
+    // if (sync_var_map_.find(current_id) == sync_var_map_.end()) {
+    //   if (!params.executor->HostMemoryUnregister(
+    //           &sync_var_map_[current_id])) {
+    //     VLOG(5) << "Unregistering sync var failed.";
+    //   }
+    // }
   }
   return absl::OkStatus();
 }
@@ -228,11 +241,32 @@ absl::Status NcclCollectivePermuteStartThunk::RunNcclCollective(
   //     nccl_api(), source_target, device_buffers[0], stream,
   //     comm_wrapper.comm_handle, device_string, current_id, use_memcpy,
   //     recv_ptr_map_);
-  return ::xla::gpu::RunCollectivePermute(
+  // if(use_memcpy) {
+  //   LOG(ERROR) << "calling sync allreduce before memcpy";
+  //   se::DeviceMemoryBase sync_var_address = se::DeviceMemoryBase((void*)(&sync_var_map_[current_id]));
+  //   TF_RETURN_IF_ERROR(nccl_api()->AllReduce(
+  //       sync_var_address, sync_var_address, PrimitiveType::S64,
+  //       1, ReductionKind::MIN, comm_wrapper.comm_handle, &stream));
+  //   LOG(ERROR) << "Dispatched sync allreduce before memcpy";
+  //   TF_RETURN_IF_ERROR(stream.BlockHostUntilDone());
+  //   LOG(ERROR) << "Sync'd host before memcpy";
+  // }
+
+  auto ret = ::xla::gpu::RunCollectivePermute(
       nccl_api(), source_target, device_buffers[0], stream,
       comm_wrapper.comm_handle, device_string, current_id, use_memcpy,
       send_value_map_[current_id], recv_value_map_[current_id]);
-
+  // if(use_memcpy) {
+  //   LOG(ERROR) << "calling sync allreduce";
+  //   se::DeviceMemoryBase sync_var_address = se::DeviceMemoryBase((void*)(&sync_var_map_[current_id]));
+  //   TF_RETURN_IF_ERROR(nccl_api()->AllReduce(
+  //       sync_var_address, sync_var_address, PrimitiveType::S64,
+  //       1, ReductionKind::MIN, comm_wrapper.comm_handle, &stream));
+  //   LOG(ERROR) << "Dispatched sync allreduce";
+  //   TF_RETURN_IF_ERROR(stream.BlockHostUntilDone());
+  //   LOG(ERROR) << "Sync'd host";
+  // }
+  return ret;
 }
 
 absl::Status RunCollectivePermute(
@@ -340,12 +374,14 @@ absl::Status RunCollectivePermute(
     TF_RETURN_IF_ERROR(nccl_api->GroupEnd());
   }
 
-  if (use_memcpy && target_id) {
-    // Need to block until the receive pointer buffer has been updated.
-    TF_RETURN_IF_ERROR(stream.BlockHostUntilDone());
-    VLOG(3) << current_id << " initiating memcpy to " << *target_id << " with recv pointer value: " << (void*)recv_ptr_value;
-    se::DeviceMemoryBase dst_addr = se::DeviceMemoryBase((void*)recv_ptr_value);
-    TF_RETURN_IF_ERROR(stream.MemcpyD2D(&dst_addr, src_addr, src_addr.size()));
+  if (use_memcpy) {
+    if (target_id) {
+      TF_RETURN_IF_ERROR(stream.BlockHostUntilDone());
+      // Need to block until the receive pointer buffer has been updated.
+      VLOG(3) << current_id << " initiating memcpy to " << *target_id << " with recv pointer value: " << (void*)recv_ptr_value;
+      se::DeviceMemoryBase destination_addr = se::DeviceMemoryBase((void*)recv_ptr_value);
+      TF_RETURN_IF_ERROR(stream.MemcpyD2D(&destination_addr, src_addr, src_addr.size()));
+    }
   }
 
   return absl::OkStatus();

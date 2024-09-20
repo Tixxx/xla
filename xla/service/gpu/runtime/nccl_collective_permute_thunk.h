@@ -114,6 +114,7 @@ class NcclCollectivePermuteStartThunk : public NcclCollectiveThunk {
   int64_t device_count_;
   std::unordered_map<int64_t, uint64_t> send_value_map_;
   std::unordered_map<int64_t, uint64_t> recv_value_map_;
+  // std::unordered_map<int64_t, int64_t> sync_var_map_;
 };
 
 absl::Status RunCollectivePermute(
