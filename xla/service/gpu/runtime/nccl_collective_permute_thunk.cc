@@ -172,14 +172,14 @@ absl::Status NcclCollectivePermuteStartThunk::Initialize(
         VLOG(5) << "Registering host recv pointer for memcpy failed.";
       }
     }
-    // if (sync_var_map_.find(current_id) == sync_var_map_.end()) {
+    if (sync_var_map_.find(current_id) == sync_var_map_.end()) {
 
-    //   if (!params.stream->parent()->HostMemoryRegister(
-    //           &sync_var_map_[current_id], sizeof(void*))) {
-    //     VLOG(5) << "Registering synchronization var failed.";
-    //   }
-    // }
-    // TF_RETURN_IF_ERROR(recv_ptr_map_.InitializeId(current_id));
+      if (!params.stream->parent()->HostMemoryRegister(
+              &sync_var_map_[current_id], sizeof(void*))) {
+        VLOG(5) << "Registering synchronization var failed.";
+      }
+    }
+    TF_RETURN_IF_ERROR(recv_ptr_map_.InitializeId(current_id));
   }
 
   return absl::OkStatus();
@@ -204,12 +204,12 @@ absl::Status NcclCollectivePermuteStartThunk::Cleanup(
         VLOG(5) << "Unregistering host recv pointer for memcpy failed.";
       }
     }
-    // if (sync_var_map_.find(current_id) == sync_var_map_.end()) {
-    //   if (!params.executor->HostMemoryUnregister(
-    //           &sync_var_map_[current_id])) {
-    //     VLOG(5) << "Unregistering sync var failed.";
-    //   }
-    // }
+    if (sync_var_map_.find(current_id) == sync_var_map_.end()) {
+      if (!params.executor->HostMemoryUnregister(
+              &sync_var_map_[current_id])) {
+        VLOG(5) << "Unregistering sync var failed.";
+      }
+    }
   }
   return absl::OkStatus();
 }
@@ -241,31 +241,31 @@ absl::Status NcclCollectivePermuteStartThunk::RunNcclCollective(
   //     nccl_api(), source_target, device_buffers[0], stream,
   //     comm_wrapper.comm_handle, device_string, current_id, use_memcpy,
   //     recv_ptr_map_);
-  // if(use_memcpy) {
-  //   LOG(ERROR) << "calling sync allreduce before memcpy";
-  //   se::DeviceMemoryBase sync_var_address = se::DeviceMemoryBase((void*)(&sync_var_map_[current_id]));
-  //   TF_RETURN_IF_ERROR(nccl_api()->AllReduce(
-  //       sync_var_address, sync_var_address, PrimitiveType::S64,
-  //       1, ReductionKind::MIN, comm_wrapper.comm_handle, &stream));
-  //   LOG(ERROR) << "Dispatched sync allreduce before memcpy";
-  //   TF_RETURN_IF_ERROR(stream.BlockHostUntilDone());
-  //   LOG(ERROR) << "Sync'd host before memcpy";
-  // }
+  if(use_memcpy) {
+    VLOG(5) << "calling sync allreduce before memcpy";
+    se::DeviceMemoryBase sync_var_address = se::DeviceMemoryBase((void*)(&sync_var_map_[current_id]));
+    TF_RETURN_IF_ERROR(nccl_api()->AllReduce(
+        sync_var_address, sync_var_address, PrimitiveType::S64,
+        1, ReductionKind::MIN, comm_wrapper.comm_handle, &stream));
+    VLOG(5) << "Dispatched sync allreduce before memcpy";
+    TF_RETURN_IF_ERROR(stream.BlockHostUntilDone());
+    LOG(ERROR) << "Sync'd host before memcpy";
+  }
 
   auto ret = ::xla::gpu::RunCollectivePermute(
       nccl_api(), source_target, device_buffers[0], stream,
       comm_wrapper.comm_handle, device_string, current_id, use_memcpy,
       send_value_map_[current_id], recv_value_map_[current_id]);
-  // if(use_memcpy) {
-  //   LOG(ERROR) << "calling sync allreduce";
-  //   se::DeviceMemoryBase sync_var_address = se::DeviceMemoryBase((void*)(&sync_var_map_[current_id]));
-  //   TF_RETURN_IF_ERROR(nccl_api()->AllReduce(
-  //       sync_var_address, sync_var_address, PrimitiveType::S64,
-  //       1, ReductionKind::MIN, comm_wrapper.comm_handle, &stream));
-  //   LOG(ERROR) << "Dispatched sync allreduce";
-  //   TF_RETURN_IF_ERROR(stream.BlockHostUntilDone());
-  //   LOG(ERROR) << "Sync'd host";
-  // }
+  if(use_memcpy) {
+    VLOG(5) << "calling sync allreduce";
+    se::DeviceMemoryBase sync_var_address = se::DeviceMemoryBase((void*)(&sync_var_map_[current_id]));
+    TF_RETURN_IF_ERROR(nccl_api()->AllReduce(
+        sync_var_address, sync_var_address, PrimitiveType::S64,
+        1, ReductionKind::MIN, comm_wrapper.comm_handle, &stream));
+    VLOG(5) << "Dispatched sync allreduce";
+    TF_RETURN_IF_ERROR(stream.BlockHostUntilDone());
+    VLOG(5) << "Sync'd host";
+  }
   return ret;
 }
 
