@@ -54,8 +54,15 @@ inline bool IsCollectiveOp(const HloValue* alias) {
 }
 
 inline bool IsNvshmemOp(const HloValue* alias) {
-  return alias->instruction()->opcode() == HloOpcode::kCustomCall &&
-      alias->instruction()->custom_call_target() == "mosaic_gpu";
+  bool is_nvshmem_collective = false;
+  if(alias->instruction()->has_backend_config()) {
+    auto gpu_config = alias->instruction()->backend_config<GpuBackendConfig>();
+    const CollectiveBackendConfig& backend_config =
+        gpu_config.value().collective_backend_config();
+    is_nvshmem_collective = backend_config.backend() == CollectiveBackendConfig::NVSHMEM;
+  }
+  return (alias->instruction()->opcode() == HloOpcode::kCustomCall &&
+      alias->instruction()->custom_call_target() == "mosaic_gpu") || is_nvshmem_collective;
 }
 
 // Set memory space to kCollectiveMemorySpaceColor for all allocations used by

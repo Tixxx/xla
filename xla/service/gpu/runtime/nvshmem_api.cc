@@ -21,7 +21,6 @@ limitations under the License.
 #include "tsl/platform/numbers.h"
 #include "tsl/platform/statusor.h"
 #include "third_party/nvshmem/nvshmem.h"
-#include "third_party/nvshmem/nvshmemx.h"
 
 namespace xla::gpu {
 
@@ -129,6 +128,12 @@ absl::Status NvshmemApi::Initialize() {
   VLOG(3) << absl::StreamFormat(
       "Initialized NVSHMEM on process %d; num_processes=%llu", process_id_,
       num_processes_);
+  
+  all_teams = (nvshmemx_team_t *)malloc(sizeof(nvshmemx_team_t) * kMaxNumTeams);
+  all_teams[(int64_t)NvshmemApi::TEAMSKIND::kWORLD] = NVSHMEM_TEAM_WORLD;
+  all_teams[(int64_t)NvshmemApi::TEAMSKIND::kSHARED] = NVSHMEM_TEAM_SHARED;
+  all_teams[(int64_t)NvshmemApi::TEAMSKIND::kNODE] = NVSHMEMX_TEAM_NODE;
+
   return absl::OkStatus();
 }
 

@@ -24,6 +24,8 @@ limitations under the License.
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
 
+#include "third_party/nvshmem/nvshmemx.h"
+
 namespace xla::gpu {
 
 //===----------------------------------------------------------------------===//
@@ -32,6 +34,14 @@ namespace xla::gpu {
 
 class NvshmemApi {
  public:
+  enum class TEAMSKIND {
+    kWORLD = 0,
+    kSHARED = 1,
+    kNODE = 2,
+    kTOTAL_TEAMS_KIND = 3,
+  };
+
+  constexpr static int64_t kMaxNumTeams = 10;
   // Returns a default NvshmemApi for a current process.
   // NvshmemApi follows the Singleton design pattern
   static NvshmemApi& Default();
@@ -62,6 +72,7 @@ class NvshmemApi {
   static std::function<absl::Status(std::string_view, std::string_view)>
       kv_store_set_;
   static constexpr char kv_store_key_[] = "nvshmem_global_init";
+  nvshmemx_team_t *all_teams;
 };
 
 }  // namespace xla::gpu

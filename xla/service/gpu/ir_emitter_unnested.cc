@@ -2514,6 +2514,17 @@ absl::Status IrEmitterUnnested::EmitRecvDoneThunk(
   return absl::OkStatus();
 }
 
+inline bool IsNvshmemCollective(const HloInstruction* instr) {
+  bool is_nvshmem_collective = false;
+  if(instr->has_backend_config()) {
+    auto gpu_config = instr->backend_config<GpuBackendConfig>();
+    const CollectiveBackendConfig& backend_config =
+        gpu_config.value().collective_backend_config();
+    is_nvshmem_collective = backend_config.backend() == CollectiveBackendConfig::NVSHMEM;
+  }
+  return is_nvshmem_collective;
+}
+
 absl::Status IrEmitterUnnested::EmitHloInstruction(
     const HloInstruction* instr) {
   switch (instr->opcode()) {
@@ -2526,10 +2537,19 @@ absl::Status IrEmitterUnnested::EmitHloInstruction(
           all_gather->use_global_device_ids());
     }
 
-    case HloOpcode::kAllReduceDone:
+    case HloOpcode::kAllReduceDone:{
+      if(IsNvshmemCollective(instr)) {
+        return EmitNvshmemAsyncDone(Thunk::kNvshmemAllReduceDone, instr);
+      }
       return EmitNcclAsyncDone(Thunk::kNcclAllReduceDone, instr);
+    }
     case HloOpcode::kAllReduceStart: {
       auto* all_reduce = Cast<HloAllReduceInstruction>(instr);
+      if(IsNvshmemCollective(instr)) {
+        return EmitNvshmemThunk<NvshmemAllReduceStartThunk, HloAllReduceInstruction>(
+          Thunk::kNvshmemAllReduceStart, all_reduce, all_reduce,
+          all_reduce->use_global_device_ids());
+      }
       return EmitNcclThunk<NcclAllReduceStartThunk, HloAllReduceInstruction>(
           Thunk::kNcclAllReduceStart, all_reduce, all_reduce,
           all_reduce->use_global_device_ids());
