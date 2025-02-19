@@ -187,6 +187,17 @@ xla_cc_binary(
         ":hlo_expand_main",
     ],
 )
+xla_cc_binary(
+    name = "nccl-abort-hang",
+    srcs = ["nccl_abort_hang.cc"],
+    testonly=True,
+    deps =[
+        "@com_google_absl//absl/flags:flag",
+        "@com_google_absl//absl/flags:parse",
+        "@com_google_absl//absl/log:check",
+        "@local_config_nccl//:nccl",
+    ],
+)
 
 xla_cc_binary(
     name = "hlo-opt",
