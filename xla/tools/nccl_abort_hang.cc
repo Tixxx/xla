@@ -18,6 +18,7 @@
 #include "absl/strings/string_view.h"
 #include "absl/synchronization/notification.h"
 #include "absl/time/clock.h"
+#include <signal.h>
 #include "absl/time/time.h"
 #include "third_party/gpus/cuda/include/cuda_runtime_api.h"
 #include "third_party/gpus/cuda/include/driver_types.h"
@@ -188,23 +189,36 @@ absl::Status Main() {
     LOG(INFO) << "!!! Synchronizing stream...";
     absl::Status s;
     absl::Notification done;
-    std::thread synchronizer([&]() {
-      while(cudaStreamQuery(stream) != cudaSuccess) {
-        std::this_thread::sleep_for(std::chrono::seconds(2));
-        LOG(INFO) << "!!!" <<" rank: " << rank <<" stream not ready";
+    const auto start = std::chrono::steady_clock::now();
+    while(true) {
+      auto stream_status = cudaStreamQuery(stream);
+      if(stream_status == cudaSuccess) {
+        break;
       }
-      LOG(INFO) << "!!!" <<" rank: " << rank <<" stream ready";
-      done.Notify();
-    });
-    if (!done.WaitForNotificationWithTimeout(absl::Seconds(30))) {
-      LOG(ERROR) << "!!! AllReduce timed out. Aborting";
-      RETURN_IF_ERROR(ToStatus(ncclCommAbort(comm)));
-      LOG(ERROR) << "!!! Aborted successfully. Waiting for sync";
-      synchronizer.join();
-      LOG(ERROR) << "!!! Joined synchronizer";
-      return absl::OkStatus();
+      const auto now = std::chrono::steady_clock::now();
+      if((now - start) > std::chrono::seconds(30)) {
+        LOG(ERROR) << "!!! AllReduce timed out. Aborting";
+        RETURN_IF_ERROR(ToStatus(ncclCommAbort(comm)));
+        LOG(ERROR) << "!!! Aborted successfully. Waiting for sync";  
+      }
     }
-    synchronizer.join();
+    // std::thread synchronizer([&]() {
+    //   while(cudaStreamQuery(stream) != cudaSuccess) {
+    //     std::this_thread::sleep_for(std::chrono::seconds(2));
+    //     LOG(INFO) << "!!!" <<" rank: " << rank <<" stream not ready";
+    //   }
+    //   LOG(INFO) << "!!!" <<" rank: " << rank <<" stream ready";
+    //   done.Notify();
+    // });
+    // if (!done.WaitForNotificationWithTimeout(absl::Seconds(30))) {
+    //   LOG(ERROR) << "!!! AllReduce timed out. Aborting";
+    //   RETURN_IF_ERROR(ToStatus(ncclCommAbort(comm)));
+    //   LOG(ERROR) << "!!! Aborted successfully. Waiting for sync";
+    //   synchronizer.join();
+    //   LOG(ERROR) << "!!! Joined synchronizer";
+    //   return absl::OkStatus();
+    // }
+    // synchronizer.join();
     RETURN_IF_ERROR(s);
     LOG(INFO) << "!!! Synchronized stream; AllReduce succeeded";
     // Copy AllReduce result buffer from device to host.
