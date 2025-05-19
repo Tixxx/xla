@@ -1395,7 +1395,7 @@ cc_library(
     hdrs = [
         "gpu_compiler.h",
     ],
-    tags = ["gpu"],
+    tags = ["gpu", "cuda-only"],
     deps = [
         ":buffer_sharing",
         ":compile_module_to_llvm_ir",
