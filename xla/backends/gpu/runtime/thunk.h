@@ -296,6 +296,8 @@ class Thunk {
     int64_t collective_max_nchannels;
     int64_t p2p_max_nchannels;
 
+    bool need_barrier;
+
    private:
     CollectiveExecuteParams(GpuCollectives* collectives,
                             se::StreamExecutor* executor, RunId run_id,
@@ -494,13 +496,13 @@ class Thunk {
 
   // A helper function to get the `GpuCollectives*` pointer from the
   // CollectiveExecuteParams.
-  static absl::StatusOr<GpuCollectives* absl_nonnull> GetGpuCollectives(
+  static absl::StatusOr<GpuCollectives * absl_nonnull> GetGpuCollectives(
       CollectiveExecuteParams const& params);
 
   // A helper function to get the `GpuCollectives*` pointer from the
   // thunk parameters. Returns an error if collectives API is not provided.
   template <typename Params>
-  static absl::StatusOr<GpuCollectives* absl_nonnull> GetGpuCollectives(
+  static absl::StatusOr<GpuCollectives * absl_nonnull> GetGpuCollectives(
       const Params& params) {
     if (params.collective_params == nullptr) {
       return Internal("Collective params are not provided");
