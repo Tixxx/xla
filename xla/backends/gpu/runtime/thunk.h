@@ -296,7 +296,7 @@ class Thunk {
     int64_t collective_max_nchannels;
     int64_t p2p_max_nchannels;
 
-    bool need_barrier;
+    bool need_barrier = false;
 
    private:
     CollectiveExecuteParams(GpuCollectives* collectives,
