@@ -396,6 +396,11 @@ absl::Status MaybeRegisterBuffers(GpuCollectives* collectives,
                                   Communicator* comm,
                                   bool use_symmetric_buffer) {
   for (int i = 0; i < buffers.size(); ++i) {
+    if (buffers[i].source_buffer.size() == 1 &&
+        buffers[i].destination_buffer.size() == 1) {
+      VLOG(5) << "Skipping buffer registration for trivial sizes.";
+      continue;
+    }
     if (buffers[i].source_memory_space == kCollectiveMemorySpaceColor) {
       TF_RETURN_IF_ERROR(RegisterBufferOnce(collectives, executor, comm,
                                             buffers[i].source_buffer,

@@ -451,7 +451,7 @@ message DebugOptions {
   bool xla_gpu_enable_nccl_user_buffers = 267;
 
   // Enable NCCL symmetric buffers.
-  bool xla_gpu_enable_nccl_symmetric_buffers = 389;
+  bool xla_gpu_enable_nccl_symmetric_buffers = 390;
 
   bool xla_gpu_enable_pipelined_all_gather = 227;
 
@@ -1214,7 +1214,7 @@ message DebugOptions {
   // Note: when adding a new flag, please add it to one of the hardware-specific
   // or hardware-agnostic sections at the top of this proto message.
 
-  // Next id: 390
+  // Next id: 391
 
   // Extra options to pass to the compilation backend (e.g. LLVM); specific
   // interpretation of these values is left to the backend.
