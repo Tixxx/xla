@@ -41,18 +41,22 @@ void ClearSchedulingAnnotations(HloInstruction* instr) {
 }
 
 static absl::StatusOr<bool> AsynchronizeInstruction(HloInstruction* instr) {
-  if (instr->opcode() != HloOpcode::kCall ||
+  if ((instr->opcode() != HloOpcode::kCall && instr->opcode() != HloOpcode::kCustomCall) ||
       !instr->frontend_attributes().map().contains(kXlaStreamAnnotationAttr)) {
     return false;
   }
+  VLOG(5) << "Asynchronizing " << instr->ToString();
+
   HloComputation* computation = instr->parent();
   auto original_attributes = instr->frontend_attributes();
 
   // These annotations are only legal on the async instructions and
   // can cause issues if the annotations remain on the inner operations,
   // so we clear them before creating the async pair.
-  for (auto* inner_instr : instr->called_computations()[0]->instructions()) {
-    ClearSchedulingAnnotations(inner_instr);
+  if(instr->opcode() == HloOpcode::kCall) {
+    for (auto* inner_instr : instr->called_computations()[0]->instructions()) {
+      ClearSchedulingAnnotations(inner_instr);
+    }
   }
   ClearSchedulingAnnotations(instr);
 

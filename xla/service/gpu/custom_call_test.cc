@@ -74,6 +74,7 @@ limitations under the License.
 #define gpuMemcpyAsync cudaMemcpyAsync
 #define gpuMemcpyDeviceToDevice cudaMemcpyDeviceToDevice
 #define gpuMemcpy cudaMemcpy
+#define gpuSync cudaStreamSynchronize
 #define gpuMemcpyDeviceToHost cudaMemcpyDeviceToHost
 #define gpuMemcpyHostToDevice cudaMemcpyHostToDevice
 #elif TENSORFLOW_USE_ROCM
@@ -984,6 +985,103 @@ TEST_F(CustomCallHloTest, HloBufferRotated) {
                         /*use_threads=*/true, /*run_hlo_passes=*/true));
   ASSERT_EQ(results.size(), kNumReplicas);
   EXPECT_THAT(results[0].data<int32_t>(), ::testing::Each(7));
+}
+
+
+// update the first 2 elements
+void Update_slice_1(se::gpu::GpuStreamHandle stream, void** buffers,
+                     const char* /*opaque*/, size_t /*opaque_len*/) {
+
+  // Expect that the input and output buffers are the same.
+  if (buffers[0] != buffers[1]) {
+    return;
+  }
+  int32_t dst[4];
+  auto err = gpuMemcpyAsync(dst, buffers[0], /*count=*/sizeof(int32_t) * 4,
+                       gpuMemcpyDeviceToHost, stream);
+  ASSERT_EQ(err, gpuSuccess);
+  err =  gpuSync(stream);
+  ASSERT_EQ(err, gpuSuccess);
+
+  dst[0] += 1;
+  dst[1] += 1;
+  err = gpuMemcpyAsync(buffers[1], dst, /*count=*/sizeof(int32_t) * 4,
+                  gpuMemcpyHostToDevice, stream);
+}
+// update the last 2 elements
+void Update_slice_2(se::gpu::GpuStreamHandle stream, void** buffers,
+                     const char* /*opaque*/, size_t /*opaque_len*/) {
+  // Expect that the input and output buffers are the same.
+  if (buffers[0] != buffers[1]) {
+    return;
+  }
+  int32_t dst[4];
+  auto err = gpuMemcpyAsync(dst, buffers[0], /*count=*/sizeof(int32_t) * 4,
+                       gpuMemcpyDeviceToHost, stream);
+  ASSERT_EQ(err, gpuSuccess);
+  
+  err =  gpuSync(stream);
+  ASSERT_EQ(err, gpuSuccess);
+
+  dst[2] += 1;
+  dst[3] += 1;
+  err = gpuMemcpyAsync(buffers[1], dst, /*count=*/sizeof(int32_t) * 4,
+                  gpuMemcpyHostToDevice, stream);
+}
+
+XLA_REGISTER_CUSTOM_CALL_TARGET(Update_slice_1, PLATFORM);
+XLA_REGISTER_CUSTOM_CALL_TARGET(Update_slice_2, PLATFORM);
+
+TEST_F(CustomCallHloTest, HloBufferUpdateSlice) {
+
+  // Mimicing concurrent ops updating the same pinned buffer at the same time at different offsets
+  // The test is using 2 pinned buffers but ideally it should be the same buffer being pinned and consumed
+  // by Update_slice_1 and Update_slice_2. Test fails with verifier error with async annotations..
+  const char* const kModuleStr = R"(
+
+  HloModule test
+  ENTRY test_computation {
+    p0 = s32[4] parameter(0)
+    p1 = s32[4] parameter(1)
+
+    b1_0 = b(s32[4]) custom-call(p0), custom_call_target="Pin",
+      output_to_operand_aliasing={{}: (0, {})}
+    b2_0 = b(s32[4]) custom-call(p1), custom_call_target="Pin",
+      output_to_operand_aliasing={{}: (0, {})}
+
+    b1_1 = b(s32[4]) custom-call(b1_0), custom_call_target="Update_slice_1",
+      output_to_operand_aliasing={{}: (0, {})},
+      api_version=API_VERSION_STATUS_RETURNING, frontend_attributes={_xla_stream_annotation="1"}
+    b2_1 = b(s32[4]) custom-call(b2_0), custom_call_target="Update_slice_2",
+      output_to_operand_aliasing={{}: (0, {})},
+      api_version=API_VERSION_STATUS_RETURNING, frontend_attributes={_xla_stream_annotation="2"}
+
+    v_1 = s32[4] custom-call(b1_1), custom_call_target="Unpin",
+      output_to_operand_aliasing={{}: (0, {})}
+    v_2 = s32[4] custom-call(b2_1), custom_call_target="Unpin",
+    output_to_operand_aliasing={{}: (0, {})}
+    ROOT or = s32[4] or(v_1, v_2)
+  })";
+
+  const int64_t kNumReplicas = 1;
+  HloModuleConfig config =
+      GetModuleConfigForTest(/*replica_count=*/kNumReplicas);
+  config.mutable_debug_options().set_xla_gpu_experimental_stream_annotation(true);
+  auto module = ParseAndReturnUnverifiedModule(kModuleStr, config);
+  EXPECT_TRUE(module.ok());
+  Array<int32_t> input1({4}), input2({4});
+  input1.Fill(0);
+  input2.Fill(0);
+  Literal input_literal1 = LiteralUtil::CreateFromArray(input1);
+  Literal input_literal2 = LiteralUtil::CreateFromArray(input2);
+
+  TF_ASSERT_OK_AND_ASSIGN(
+      std::vector<Literal> results,
+      ExecuteReplicated(std::move(module.value()), {{&input_literal1, &input_literal2}},
+                        kNumReplicas,
+                        /*use_threads=*/true, /*run_hlo_passes=*/true));
+  ASSERT_EQ(results.size(), kNumReplicas);
+  EXPECT_THAT(results[0].data<int32_t>(), ::testing::Each(1));
 }
 
 }  // anonymous namespace
