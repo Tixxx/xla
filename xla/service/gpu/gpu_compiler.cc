@@ -79,6 +79,7 @@ limitations under the License.
 #include "xla/backends/gpu/transforms/algebraic_simplifier.h"
 #include "xla/backends/gpu/transforms/algorithm_checker.h"
 #include "xla/backends/gpu/transforms/async_wrapper.h"
+#include "xla/backends/gpu/transforms/collective_copy_insertion.h"
 #include "xla/backends/gpu/transforms/collectives/all_gather_combiner.h"
 #include "xla/backends/gpu/transforms/collectives/all_gather_dynamic_slice_simplifier.h"
 #include "xla/backends/gpu/transforms/collectives/all_gather_major_dimension_rewriter.h"
@@ -1342,6 +1343,9 @@ absl::Status RunPostFusionSimplificationPasses(
         gpu_target_config.device_description);
     pipeline.AddPass<StreamAttributeAsyncWrapper>();
   }
+
+  pipeline.AddPass<CollectiveCopyInsertion>();
+
   if (hlo_module->config()
           .debug_options()
           .xla_gpu_experimental_stream_annotation()) {

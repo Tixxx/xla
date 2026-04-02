@@ -1669,6 +1669,7 @@ cc_library(
         "//xla/backends/gpu/transforms:algebraic_simplifier",
         "//xla/backends/gpu/transforms:algorithm_checker",
         "//xla/backends/gpu/transforms:async_wrapper",
+        "//xla/backends/gpu/transforms:collective_copy_insertion",
         "//xla/backends/gpu/transforms:composite_rewriter",
         "//xla/backends/gpu/transforms:conv_kind_assignment",
         "//xla/backends/gpu/transforms:conv_rewriter",
