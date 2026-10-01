@@ -105,7 +105,7 @@ CompileModuleResults InitializeResults(const HloModule* hlo_module) {
                   : 1,
               // Keep disabled by default until the 14-day AOT
               // forward-compatibility window has elapsed (9th of October 2026).
-              /*enable_dedicated_memcpy_streams=*/false,
+              /*enable_dedicated_memcpy_streams=*/true,
           });
   return results;
 }
