@@ -146,7 +146,7 @@ AllGatherThunk::GetCliqueRequirements(const GpuCliqueKey& clique_key,
 
 absl::Status AllGatherThunk::PrepareCollective(const PrepareParams& params,
                                                const GpuCliqueKey& clique_key) {
-  if (use_symmetric_memory() && clique_key.is_local()) {
+  if (use_symmetric_memory()) {
     CollectiveMemoryRequests& mem_requests = *params.collective_memory_requests;
     for (const Buffer& buffer : buffers()) {
       ABSL_RETURN_IF_ERROR(mem_requests.RequestSymmetricAllocationSlice(

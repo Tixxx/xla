@@ -161,6 +161,39 @@ TEST_F(CollectiveBackendAssignerTest, AllGatherSymmetricMemorySetsMode) {
       absl_testing::IsOkAndHolds(DebugOptions::COLLECTIVES_SYMMETRIC_MEMORY));
 }
 
+TEST_F(CollectiveBackendAssignerTest, ReduceScatterSymmetricMemorySetsMode) {
+  absl::string_view kHloText = R"(
+    HloModule m
+
+    add {
+      x = u32[] parameter(0)
+      y = u32[] parameter(1)
+      ROOT add = u32[] add(x, y)
+    }
+
+    ENTRY main {
+      p0 = u32[8,8] parameter(0)
+      ROOT result = u32[4,8] reduce-scatter(p0), dimensions={0},
+        replica_groups={{0,1}}, channel_id=30, to_apply=add
+    }
+  )";
+
+  ASSERT_OK_AND_ASSIGN(auto module, ParseAndReturnVerifiedModule(kHloText));
+  module->mutable_config()
+      .mutable_debug_options()
+      .set_xla_gpu_reduce_scatter_mode(
+          DebugOptions::COLLECTIVES_SYMMETRIC_MEMORY);
+
+  EXPECT_THAT(RunCollectiveBackendAssigner(module.get()),
+              absl_testing::IsOkAndHolds(true));
+
+  const HloInstruction* reduce_scatter =
+      module->entry_computation()->root_instruction();
+  EXPECT_THAT(
+      GetCollectivesMode(reduce_scatter),
+      absl_testing::IsOkAndHolds(DebugOptions::COLLECTIVES_SYMMETRIC_MEMORY));
+}
+
 TEST_F(CollectiveBackendAssignerTest, AllGatherPrivateMemoryLeavesDefault) {
   absl::string_view kHloText = R"(
     HloModule m

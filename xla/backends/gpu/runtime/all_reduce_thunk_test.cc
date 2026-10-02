@@ -299,6 +299,33 @@ TEST(ReduceScatterThunkTest, ProtoRoundTrip) {
   EXPECT_THAT(round_trip_proto, EqualsProto(proto));
 }
 
+TEST(ReduceScatterThunkTest, SymmetricModeProtoRoundTrip) {
+  ThunkProto proto = tsl::proto_testing::ParseTextProtoOrDie<ThunkProto>(
+      R"pb(
+        thunk_info { profile_annotation: "partition_id_profile_annotation" }
+        reduce_scatter_thunk {
+          collective_config {}
+          reduction_kind: 1
+          collectives_mode: COLLECTIVES_SYMMETRIC_MEMORY
+        }
+      )pb");
+
+  Thunk::ThunkInfo thunk_info;
+  thunk_info.profile_annotation = proto.thunk_info().profile_annotation();
+
+  std::vector<BufferAllocation> buffer_allocations = {
+      BufferAllocation(/*index=*/0, /*size=*/4, /*color=*/0)};
+
+  ASSERT_OK_AND_ASSIGN(
+      std::unique_ptr<ReduceScatterThunk> thunk,
+      ReduceScatterThunk::FromProto(thunk_info, proto.reduce_scatter_thunk(),
+                                    buffer_allocations));
+  EXPECT_TRUE(thunk->use_symmetric_memory());
+
+  ASSERT_OK_AND_ASSIGN(ThunkProto round_trip_proto, thunk->ToProto());
+  EXPECT_THAT(round_trip_proto, EqualsProto(proto));
+}
+
 //===----------------------------------------------------------------------===//
 // Command buffer tests (Record)
 //===----------------------------------------------------------------------===//

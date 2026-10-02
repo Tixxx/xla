@@ -45,6 +45,10 @@ bool IsAllGatherOp(const HloInstruction* instr) {
       instr);
 }
 
+bool IsReduceScatterOp(const HloInstruction* instr) {
+  return HloPredicateIsOp<HloOpcode::kReduceScatter>(instr);
+}
+
 absl::StatusOr<bool> AssignCollectivesMode(
     HloModule* module, DebugOptions::CollectivesMode mode,
     bool (*predicate)(const HloInstruction*)) {
@@ -90,6 +94,18 @@ absl::StatusOr<bool> CollectiveBackendAssigner::RunImpl(
           module, module->config().debug_options().xla_gpu_all_gather_mode(),
           IsAllGatherOp));
   changed |= all_gather_mode_changed;
+
+  DebugOptions::CollectivesMode reduce_scatter_mode =
+      module->config().debug_options().xla_gpu_reduce_scatter_mode();
+  if (reduce_scatter_mode == DebugOptions::COLLECTIVES_PEER_MEMORY) {
+    return absl::InvalidArgumentError(
+        "xla_gpu_reduce_scatter_mode only supports private and symmetric "
+        "memory.");
+  }
+  ABSL_ASSIGN_OR_RETURN(
+      bool reduce_scatter_mode_changed,
+      AssignCollectivesMode(module, reduce_scatter_mode, IsReduceScatterOp));
+  changed |= reduce_scatter_mode_changed;
 
   return changed;
 }

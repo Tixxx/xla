@@ -600,6 +600,10 @@ message DebugOptions {
   // space all-gather buffers are allocated in. See CollectivesMode for details.
   optional CollectivesMode xla_gpu_all_gather_mode = 485;
 
+  // Memory mode for the reduce-scatter operation. Only private and symmetric
+  // memory are supported. See CollectivesMode for details.
+  optional CollectivesMode xla_gpu_reduce_scatter_mode = 554;
+
   // Number of devices per host for first stage of BlueConnect decomposition
   // pass. The pass will attempt to decompose all-reduces ops into a
   // ReduceScatter-AllReduce-AllGather sequence, with the initial ReduceScatter
@@ -1915,7 +1919,7 @@ message DebugOptions {
   // Enables Raft for stable TopK.
   optional bool xla_gpu_experimental_enable_raft_for_stable_topk = 546;
 
-  // Next id: 554
+  // Next id: 555
 
   // Extra options to pass to the compilation backend (e.g. LLVM); specific
   // interpretation of these values is left to the backend.

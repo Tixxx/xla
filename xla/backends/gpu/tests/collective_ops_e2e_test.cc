@@ -298,6 +298,11 @@ class CollectivesModeOps
     }
     debug_options.set_xla_gpu_collective_permute_mode(collectives_mode_);
     debug_options.set_xla_gpu_all_gather_mode(collectives_mode_);
+    // Reduce-scatter only supports private and symmetric memory.
+    debug_options.set_xla_gpu_reduce_scatter_mode(
+        collectives_mode_ == DebugOptions::COLLECTIVES_SYMMETRIC_MEMORY
+            ? DebugOptions::COLLECTIVES_SYMMETRIC_MEMORY
+            : DebugOptions::COLLECTIVES_PRIVATE_MEMORY);
     return debug_options;
   }
 
@@ -864,6 +869,43 @@ ENTRY main {
     EXPECT_TRUE(LiteralTestUtil::Equal(expected, execution.results[rank]))
         << "destination rank " << rank;
   }
+}
+
+TEST_P(CollectivesModeOps, ReduceScatter) {
+  const absl::string_view kModuleStr = R"(
+  HloModule test
+  add {
+    lhs = u32[] parameter(0)
+    rhs = u32[] parameter(1)
+    ROOT add = u32[] add(lhs, rhs)
+  }
+
+  ENTRY main {
+    c0 = u32[8] constant({1, 2, 3, 4, 5, 6, 7, 8})
+    c1 = u32[8] constant({10, 11, 12, 13, 14, 15, 16, 17})
+    zero = u32[] constant(0)
+    id = u32[] replica-id()
+    p = pred[] compare(id, zero), direction=EQ
+    pb = pred[8] broadcast(p), dimensions={}
+    data = u32[8] select(pb, c0, c1)
+    ROOT ars = u32[4] reduce-scatter(data), replica_groups={},
+                      dimensions={0}, to_apply=add
+  }
+  )";
+
+  const int64_t kNumReplicas = 2;
+  ASSERT_GE(device_count(), kNumReplicas)
+      << "Test requires at least " << kNumReplicas << " devices ("
+      << device_count() << " available)";
+
+  ASSERT_OK_AND_ASSIGN(auto module,
+                       ParseAndReturnVerifiedModule(kModuleStr, kNumReplicas));
+  ASSERT_OK_AND_ASSIGN(ExecutionResult execution_result,
+                       ExecuteReplicated(std::move(module)));
+
+  const std::vector<Literal>& results = execution_result.results;
+  LiteralTestUtil::ExpectR1Equal<uint32_t>({11, 13, 15, 17}, results[0]);
+  LiteralTestUtil::ExpectR1Equal<uint32_t>({19, 21, 23, 25}, results[1]);
 }
 
 TEST_P(CollectivesModeOps, CollectivePermute) {

@@ -385,6 +385,7 @@ message ReduceScatterThunkProto {
   CollectiveConfigProto collective_config = 2;
   repeated CollectiveBufferProto buffers = 3;
   xla.ReductionKindProto reduction_kind = 4;
+  xla.DebugOptions.CollectivesMode collectives_mode = 5;
 }
 
 message CollectiveReduceThunkProto {

@@ -29,6 +29,7 @@ limitations under the License.
 #include "xla/backends/gpu/collectives/gpu_clique_key.h"
 #include "xla/backends/gpu/collectives/gpu_collectives.h"
 #include "xla/backends/gpu/collectives/gpu_communicator.h"
+#include "xla/backends/gpu/runtime/collective_memory_requests.h"
 #include "xla/backends/gpu/runtime/collective_thunk.h"
 #include "xla/backends/gpu/runtime/collective_thunk.pb.h"
 #include "xla/backends/gpu/runtime/thunk.h"
@@ -47,6 +48,7 @@ limitations under the License.
 #include "xla/stream_executor/stream_executor.h"
 #include "xla/tsl/platform/logging.h"
 #include "xla/util.h"
+#include "xla/xla.pb.h"
 #include "xla/xla_data.pb.h"
 
 namespace xla {
@@ -106,10 +108,22 @@ absl::Status RunAllReduce(ReductionKind reduction_kind,
   return absl::OkStatus();
 }
 
+namespace {
+CollectiveThunk::CollectivesMode GetCollectivesMode(
+    const HloReduceScatterInstruction* inst) {
+  auto config = inst->backend_config<GpuBackendConfig>();
+  if (config.ok()) {
+    return config->collective_backend_config().collectives_mode();
+  }
+  return DebugOptions::COLLECTIVES_PRIVATE_MEMORY;
+}
+}  // namespace
+
 AllReduceReduceScatterThunkBase::AllReduceReduceScatterThunkBase(
     Thunk::Kind kind, ThunkInfo thunk_info, AllReduceConfig config,
-    std::vector<Buffer> buffers)
-    : CollectiveThunk(kind, thunk_info, std::move(buffers)),
+    std::vector<Buffer> buffers, CollectivesMode collectives_mode)
+    : CollectiveThunk(kind, thunk_info, std::move(buffers), CommunicationId(0),
+                      collectives_mode),
       config_(std::move(config)) {
   CHECK_EQ(config_.config.operand_element_type.size(), this->buffers().size());
 }
@@ -197,7 +211,8 @@ ReduceScatterThunk::ReduceScatterThunk(ThunkInfo thunk_info,
                                        bool p2p_memcpy_enabled)
     : AllReduceReduceScatterThunkBase(Thunk::kReduceScatter, thunk_info,
                                       GetAllReduceConfigInst(inst),
-                                      std::move(buffers)) {}
+                                      std::move(buffers),
+                                      GetCollectivesMode(inst)) {}
 
 /*static*/ absl::Status ReduceScatterThunk::CheckImplementable(
     const HloReduceScatterInstruction* inst, int64_t replica_count,
@@ -214,9 +229,25 @@ ReduceScatterThunk::ReduceScatterThunk(ThunkInfo thunk_info,
 
 ReduceScatterThunk::ReduceScatterThunk(ThunkInfo thunk_info,
                                        AllReduceConfig config,
-                                       std::vector<Buffer> buffers)
+                                       std::vector<Buffer> buffers,
+                                       CollectivesMode collectives_mode)
     : AllReduceReduceScatterThunkBase(Thunk::kReduceScatter, thunk_info,
-                                      std::move(config), std::move(buffers)) {}
+                                      std::move(config), std::move(buffers),
+                                      collectives_mode) {}
+
+absl::Status ReduceScatterThunk::PrepareCollective(
+    const PrepareParams& params, const GpuCliqueKey& clique_key) {
+  if (use_symmetric_memory()) {
+    CollectiveMemoryRequests& mem_requests = *params.collective_memory_requests;
+    for (const Buffer& buffer : buffers()) {
+      ABSL_RETURN_IF_ERROR(mem_requests.RequestSymmetricAllocationSlice(
+          clique_key, buffer.source_buffer.slice));
+      ABSL_RETURN_IF_ERROR(mem_requests.RequestSymmetricAllocationSlice(
+          clique_key, buffer.destination_buffer.slice));
+    }
+  }
+  return absl::OkStatus();
+}
 
 absl::StatusOr<std::unique_ptr<ReduceScatterThunk>>
 ReduceScatterThunk::FromProto(
@@ -239,7 +270,7 @@ ReduceScatterThunk::FromProto(
 
   return std::make_unique<ReduceScatterThunk>(
       std::move(thunk_info), AllReduceConfig{config, reduction_kind},
-      std::move(buffers));
+      std::move(buffers), thunk_proto.collectives_mode());
 }
 
 absl::StatusOr<ThunkProto> ReduceScatterThunk::ToProto() const {
@@ -254,6 +285,7 @@ absl::StatusOr<ThunkProto> ReduceScatterThunk::ToProto() const {
 
   *thunk_proto->mutable_collective_config() = config_.config.ToProto();
   thunk_proto->set_reduction_kind(ToReductionKindProto(config_.reduction_kind));
+  thunk_proto->set_collectives_mode(collectives_mode());
 
   return proto;
 }

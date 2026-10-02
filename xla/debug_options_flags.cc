@@ -340,6 +340,8 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
   opts.set_xla_gpu_collective_permute_mode(
       DebugOptions::COLLECTIVES_PRIVATE_MEMORY);
   opts.set_xla_gpu_all_gather_mode(DebugOptions::COLLECTIVES_PRIVATE_MEMORY);
+  opts.set_xla_gpu_reduce_scatter_mode(
+      DebugOptions::COLLECTIVES_PRIVATE_MEMORY);
   opts.set_xla_gpu_enable_reduce_scatter_combine_by_dim(false);
   opts.set_xla_gpu_enable_approx_costly_collectives(false);
   opts.set_xla_autotuner_preferred_backend(
@@ -3042,6 +3044,13 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
       collectives_mode_setter_for(&DebugOptions::set_xla_gpu_all_gather_mode),
       absl::StrCat(debug_options->xla_gpu_all_gather_mode()),
       "Memory mode for all-gather: private, symmetric, peer. "
+      "See CollectivesMode for details."));
+  flag_list->push_back(tsl::Flag(
+      "xla_gpu_reduce_scatter_mode",
+      collectives_mode_setter_for(
+          &DebugOptions::set_xla_gpu_reduce_scatter_mode),
+      absl::StrCat(debug_options->xla_gpu_reduce_scatter_mode()),
+      "Memory mode for reduce-scatter: private, symmetric. "
       "See CollectivesMode for details."));
   flag_list->push_back(tsl::Flag(
       "xla_gpu_dump_autotune_logs_to",

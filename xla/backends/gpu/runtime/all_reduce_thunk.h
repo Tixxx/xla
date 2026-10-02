@@ -50,7 +50,9 @@ class AllReduceReduceScatterThunkBase : public CollectiveThunk {
  public:
   AllReduceReduceScatterThunkBase(Kind kind, ThunkInfo thunk_info,
                                   AllReduceConfig config,
-                                  std::vector<Buffer> buffers);
+                                  std::vector<Buffer> buffers,
+                                  CollectivesMode collectives_mode =
+                                      DebugOptions::COLLECTIVES_PRIVATE_MEMORY);
 
   const CollectiveConfig& config() const override { return config_.config; }
   ReductionKind reduction_kind() const { return config_.reduction_kind; }
@@ -105,7 +107,9 @@ class ReduceScatterThunk : public AllReduceReduceScatterThunkBase {
                      std::vector<Buffer> buffers,
                      bool p2p_memcpy_enabled = false);
   ReduceScatterThunk(ThunkInfo thunk_info, AllReduceConfig config,
-                     std::vector<Buffer> buffers);
+                     std::vector<Buffer> buffers,
+                     CollectivesMode collectives_mode =
+                         DebugOptions::COLLECTIVES_PRIVATE_MEMORY);
 
   static absl::string_view GetHloOpName() { return "reduce-scatter-start"; }
 
@@ -130,6 +134,9 @@ class ReduceScatterThunk : public AllReduceReduceScatterThunkBase {
                              Communicator& comm) override;
 
   bool CanUseSymmetricBuffer() const override { return true; }
+
+  absl::Status PrepareCollective(const PrepareParams& params,
+                                 const GpuCliqueKey& clique_key) override;
 };
 
 // -----------------------------------------------------------------------------
